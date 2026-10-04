@@ -14,6 +14,7 @@ import { IndexStorageHeatmap } from './IndexStorageHeatmap';
 import { IndexHeatmap } from './IndexHeatmap';
 import { GlobalIndexCorrelationChart } from './GlobalIndexCorrelationChart';
 import { IndexChangeHistoryPanel } from './IndexChangeHistoryPanel';
+import { IndexUsageTrendChart } from './IndexUsageTrendChart';
 
 interface DatabaseSchemaExplorerViewProps {
   flags: OptimizationFlags;
@@ -331,7 +332,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [isApplyingBulkOptimize, setIsApplyingBulkOptimize] = useState<boolean>(false);
   const [animatingBulkIndexName, setAnimatingBulkIndexName] = useState<string | null>(null);
   const [showAiSuggestionsSidePanel, setShowAiSuggestionsSidePanel] = useState<boolean>(true);
-  const [sidePanelViewMode, setSidePanelViewMode] = useState<'suggestions' | 'complexity-heatmap' | 'lifecycle-analytics' | 'index-usage' | 'correlation' | 'history'>('complexity-heatmap');
+  const [sidePanelViewMode, setSidePanelViewMode] = useState<'suggestions' | 'complexity-heatmap' | 'lifecycle-analytics' | 'index-usage' | 'usage-trend' | 'correlation' | 'history'>('complexity-heatmap');
   const [disabledImpactEdges, setDisabledImpactEdges] = useState<Record<string, boolean>>({});
   const [selectedCompositeSuggestionId, setSelectedCompositeSuggestionId] = useState<string>('idx_transactions_email_status');
   const [compositePatternFilter, setCompositePatternFilter] = useState<'all' | 'transactions' | 'line_items' | 'customers'>('all');
@@ -1440,62 +1441,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     }
   ];
 
-  const isIndexRedundant = (idxName: string, columns: string[]) => {
-    if (consolidatedIndexes.includes(idxName)) return false;
-    if (idxName.includes('email_missing') && createdCompositeIndexes.includes('email_status')) return true;
-    if (idxName.includes('amount_missing') && createdCompositeIndexes.includes('category_amount')) return true;
-    return false;
-  };
-
-  const handleConsolidateIndex = (idxName: string) => {
-    if (lockedIndexes.includes(idxName)) {
-      setImportSuccessNotice(`Cannot consolidate index "${idxName}": Index is locked as high-priority manual.`);
-      setTimeout(() => setImportSuccessNotice(null), 4000);
-      return;
-    }
-    setConsolidatedIndexes([...consolidatedIndexes, idxName]);
-    if (idxName.includes('email_missing')) {
-      setCreatedCustomIndexes(createdCustomIndexes.filter((c) => c !== 'customer_email'));
-      if (!createdCompositeIndexes.includes('email_status')) {
-        setCreatedCompositeIndexes([...createdCompositeIndexes, 'email_status']);
-      }
-    }
-    if (idxName.includes('amount_missing')) {
-      setCreatedCustomIndexes(createdCustomIndexes.filter((c) => c !== 'amount'));
-      if (!createdCompositeIndexes.includes('category_amount')) {
-        setCreatedCompositeIndexes([...createdCompositeIndexes, 'category_amount']);
-      }
-    }
-
-    // Dispatch Consolidation Merge Event to window
-    const isEmail = idxName.includes('email_missing');
-    const targetIdx = isEmail ? 'idx_transactions_email_status' : 'idx_transactions_category_amount';
-    const targetCols = isEmail ? ['customer_email', 'status'] : ['category', 'amount'];
-    const ddl = isEmail
-      ? `CREATE INDEX CONCURRENTLY idx_transactions_email_status ON transactions (customer_email, status);\nDROP INDEX CONCURRENTLY ${idxName};`
-      : `CREATE INDEX CONCURRENTLY idx_transactions_category_amount ON transactions (category, amount);\nDROP INDEX CONCURRENTLY ${idxName};`;
-
-    const ev = new CustomEvent('optimization-lifecycle-event', {
-      detail: {
-        action: 'MERGE',
-        actionLabel: 'Multi-Column Index Consolidation',
-        triggerSource: 'Consolidation',
-        targetIndex: targetIdx,
-        targetTable: 'transactions',
-        columns: targetCols,
-        rationale: `Consolidation feature merged overlapping single-column index "${idxName}" into composite B-Tree index "${targetIdx}", reducing write amplification and query latency.`,
-        executedDdl: ddl,
-        executionDurationMs: +(30 + Math.random() * 15).toFixed(1),
-        healthDelta: { before: 52, after: 96, gain: 44 },
-        latencyImpact: { beforeMs: '310.0 ms', afterMs: '1.4 ms', speedup: '99.5% faster' },
-        writeOverheadDelta: '-22.4% WAL write lock reduction',
-        status: 'COMPLETED'
-      }
-    });
-    window.dispatchEvent(ev);
-    setImportSuccessNotice(`[Consolidation Executed] Merged "${idxName}" into composite index "${targetIdx}". Captured in Optimization Lifecycle!`);
-    setTimeout(() => setImportSuccessNotice(null), 5000);
-  };
+  // Redundant index detection and merge handlers defined below 'tables' initialization
 
   const handleAnalyzeWorkload = () => {
     setIsAnalyzingWorkload(true);
@@ -1699,12 +1645,13 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
       indexes: [
         { name: 'PRIMARY KEY (id)', type: 'B-Tree (Clustered)', columns: ['id'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: !removedIndexes.includes('PRIMARY KEY (id)') },
         { name: 'idx_orders_status_cat', type: 'Composite B-Tree', columns: ['status', 'category'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: flags.btreeIndexing && !removedIndexes.includes('idx_orders_status_cat') },
+        { name: 'idx_orders_status', type: 'B-Tree (Single-column / Redundant)', columns: ['status'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: flags.btreeIndexing && !removedIndexes.includes('idx_orders_status') && !consolidatedIndexes.includes('idx_orders_status') },
         { name: 'idx_orders_cat_status', type: 'Composite B-Tree (Inverted Covering)', columns: ['category', 'status'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: flags.btreeIndexing && !removedIndexes.includes('idx_orders_cat_status') && !resolvedConstraintConflicts['transactions-category-status'] },
         { name: 'idx_transactions_date', type: 'B-Tree', columns: ['created_at'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: !removedIndexes.includes('idx_transactions_date') },
-        { name: 'idx_transactions_email_missing', type: 'B-Tree (Missing Bottleneck)', columns: ['customer_email'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: createdCustomIndexes.includes('customer_email') && !removedIndexes.includes('idx_transactions_email_missing') },
-        { name: 'idx_transactions_amount_missing', type: 'B-Tree (Missing Bottleneck)', columns: ['amount'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: createdCustomIndexes.includes('amount') && !removedIndexes.includes('idx_transactions_amount_missing') },
-        { name: 'idx_transactions_email_status', type: 'Composite B-Tree (AI Recommended)', columns: ['customer_email', 'status'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: createdCompositeIndexes.includes('email_status') && !removedIndexes.includes('idx_transactions_email_status') },
-        { name: 'idx_transactions_category_amount', type: 'Composite B-Tree (AI Recommended)', columns: ['category', 'amount'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: createdCompositeIndexes.includes('category_amount') && !removedIndexes.includes('idx_transactions_category_amount') },
+        { name: 'idx_transactions_email_missing', type: 'B-Tree (Missing Bottleneck)', columns: ['customer_email'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: createdCustomIndexes.includes('customer_email') && !removedIndexes.includes('idx_transactions_email_missing') && !consolidatedIndexes.includes('idx_transactions_email_missing') },
+        { name: 'idx_transactions_amount_missing', type: 'B-Tree (Missing Bottleneck)', columns: ['amount'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: createdCustomIndexes.includes('amount') && !removedIndexes.includes('idx_transactions_amount_missing') && !consolidatedIndexes.includes('idx_transactions_amount_missing') },
+        { name: 'idx_transactions_email_status', type: 'Composite B-Tree (AI Recommended)', columns: ['customer_email', 'status'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: (createdCompositeIndexes.includes('email_status') || consolidatedIndexes.includes('idx_transactions_email_missing')) && !removedIndexes.includes('idx_transactions_email_status') },
+        { name: 'idx_transactions_category_amount', type: 'Composite B-Tree (AI Recommended)', columns: ['category', 'amount'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: (createdCompositeIndexes.includes('category_amount') || consolidatedIndexes.includes('idx_transactions_amount_missing')) && !removedIndexes.includes('idx_transactions_category_amount') },
         ...importedCustomIndices.filter((idx) => idx.targetTable === 'transactions' && !removedIndexes.includes(idx.name)),
       ],
       relationships: [
@@ -1781,6 +1728,263 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   ];
 
   const currentTableData = tables.find((t) => t.name === selectedTable) || tables[0];
+
+  interface RedundantIndexEvaluation {
+    isRedundant: boolean;
+    isCovering: boolean;
+    leadingCol: string;
+    coveringIndexName: string;
+    coveringColumns: string[];
+    redundantIndexNames: string[];
+    explanation: string;
+    savedMb: number;
+    writeOverheadPercent: number;
+  }
+
+  // Evaluates whether an index is redundant by analyzing active indexes on the same table sharing leading columns
+  const getRedundantIndexInfo = (idxName: string, columns: string[] = [], tableName?: string): RedundantIndexEvaluation => {
+    const emptyResult: RedundantIndexEvaluation = {
+      isRedundant: false,
+      isCovering: false,
+      leadingCol: '',
+      coveringIndexName: '',
+      coveringColumns: [],
+      redundantIndexNames: [],
+      explanation: '',
+      savedMb: 0,
+      writeOverheadPercent: 0
+    };
+
+    if (!idxName || consolidatedIndexes.includes(idxName) || removedIndexes.includes(idxName)) {
+      return emptyResult;
+    }
+    if (idxName.includes('PRIMARY KEY')) {
+      return emptyResult;
+    }
+
+    // Locate the table containing this index
+    const tbl = tables.find((t) => t.name === tableName || t.indexes.some((i) => i.name === idxName));
+    if (!tbl) return emptyResult;
+
+    const selfIdx = tbl.indexes.find((i) => i.name === idxName);
+    const selfCols = columns && columns.length > 0 ? columns : (selfIdx?.columns || []);
+    if (!selfCols || selfCols.length === 0) return emptyResult;
+
+    const leadingCol = selfCols[0];
+
+    // Find other active, non-removed, non-consolidated indexes on this table sharing the exact same leading column
+    const otherCandidates = tbl.indexes.filter((other) =>
+      other.name !== idxName &&
+      other.active &&
+      !removedIndexes.includes(other.name) &&
+      !consolidatedIndexes.includes(other.name) &&
+      !other.name.includes('PRIMARY KEY') &&
+      other.columns &&
+      other.columns.length > 0 &&
+      other.columns[0] === leadingCol
+    );
+
+    if (otherCandidates.length === 0) {
+      if (idxName.includes('email_missing') && (createdCompositeIndexes.includes('email_status') || tbl.indexes.some((i) => i.name.includes('email_status') && i.active))) {
+        return {
+          isRedundant: true,
+          isCovering: false,
+          leadingCol: 'customer_email',
+          coveringIndexName: 'idx_transactions_email_status',
+          coveringColumns: ['customer_email', 'status'],
+          redundantIndexNames: [],
+          explanation: 'Redundant index: Shares leading column (customer_email) with composite index "idx_transactions_email_status". Single-column queries are satisfied by the leftmost prefix.',
+          savedMb: 2.3,
+          writeOverheadPercent: 15
+        };
+      }
+      if (idxName.includes('amount_missing') && (createdCompositeIndexes.includes('category_amount') || tbl.indexes.some((i) => i.name.includes('category_amount') && i.active))) {
+        return {
+          isRedundant: true,
+          isCovering: false,
+          leadingCol: 'amount',
+          coveringIndexName: 'idx_transactions_category_amount',
+          coveringColumns: ['category', 'amount'],
+          redundantIndexNames: [],
+          explanation: 'Redundant index: Overlapped by composite index "idx_transactions_category_amount".',
+          savedMb: 2.1,
+          writeOverheadPercent: 12
+        };
+      }
+      return emptyResult;
+    }
+
+    // Check if self is covered by a more comprehensive index (more columns, superset prefix)
+    const covering = otherCandidates.find((other) => other.columns.length > selfCols.length);
+    if (covering) {
+      return {
+        isRedundant: true,
+        isCovering: false,
+        leadingCol,
+        coveringIndexName: covering.name,
+        coveringColumns: covering.columns,
+        redundantIndexNames: [],
+        explanation: `Shares leading column "${leadingCol}" with composite index "${covering.name}" (${covering.columns.join(', ')}). Under B-Tree leftmost prefix rules, queries filtering on "${leadingCol}" are fully satisfied by "${covering.name}". Maintaining "${idxName}" creates duplicate WAL writes (+15% write lock overhead) and wastes storage.`,
+        savedMb: 2.3,
+        writeOverheadPercent: 15
+      };
+    }
+
+    // Check if self covers other shorter indexes
+    const coveredShorter = otherCandidates.filter((other) => other.columns.length < selfCols.length);
+    if (coveredShorter.length > 0) {
+      return {
+        isRedundant: false,
+        isCovering: true,
+        leadingCol,
+        coveringIndexName: idxName,
+        coveringColumns: selfCols,
+        redundantIndexNames: coveredShorter.map((s) => s.name),
+        explanation: `Covering index: Leading column "${leadingCol}" satisfies queries for shorter redundant index(es): ${coveredShorter.map((s) => s.name).join(', ')}.`,
+        savedMb: 0,
+        writeOverheadPercent: 0
+      };
+    }
+
+    // Both have equal length and same leading column
+    const counterpart = otherCandidates[0];
+    return {
+      isRedundant: true,
+      isCovering: false,
+      leadingCol,
+      coveringIndexName: counterpart.name,
+      coveringColumns: counterpart.columns,
+      redundantIndexNames: [],
+      explanation: `Indexes "${idxName}" and "${counterpart.name}" both share identical leading column "${leadingCol}". Maintaining parallel indexes causes write amplification and lock contention. Consolidate them into a single efficient index.`,
+      savedMb: 2.3,
+      writeOverheadPercent: 15
+    };
+  };
+
+  const isIndexRedundant = (idxName: string, columns: string[] = [], tableName?: string): boolean => {
+    return getRedundantIndexInfo(idxName, columns, tableName).isRedundant;
+  };
+
+  const handleMergeIndexes = (idxName: string, targetCoveringName?: string) => {
+    if (lockedIndexes.includes(idxName)) {
+      setImportSuccessNotice(`Cannot merge protected index "${idxName}": Unlock index first.`);
+      setTimeout(() => setImportSuccessNotice(null), 4000);
+      return;
+    }
+
+    const info = getRedundantIndexInfo(idxName, []);
+    const coveringName = targetCoveringName || info.coveringIndexName || 'composite index';
+
+    // Mark as consolidated and removed
+    setConsolidatedIndexes((prev) => Array.from(new Set([...prev, idxName])));
+    setRemovedIndexes((prev) => Array.from(new Set([...prev, idxName])));
+
+    // Handle specific composite/custom states if needed
+    if (idxName.includes('email_missing')) {
+      setCreatedCustomIndexes((prev) => prev.filter((c) => c !== 'customer_email'));
+      if (!createdCompositeIndexes.includes('email_status')) {
+        setCreatedCompositeIndexes((prev) => [...prev, 'email_status']);
+      }
+    }
+    if (idxName.includes('amount_missing')) {
+      setCreatedCustomIndexes((prev) => prev.filter((c) => c !== 'amount'));
+      if (!createdCompositeIndexes.includes('category_amount')) {
+        setCreatedCompositeIndexes((prev) => [...prev, 'category_amount']);
+      }
+    }
+    if (idxName === 'idx_line_items_tx') {
+      if (!createdCompositeIndexes.includes('tx_price')) {
+        setCreatedCompositeIndexes((prev) => [...prev, 'tx_price']);
+      }
+    }
+
+    // DDL & Lifecycle event
+    const ddl = `/* Consolidated Redundant B-Tree Index on Leading Column (${info.leadingCol || 'prefix'}) */\nDROP INDEX CONCURRENTLY ${idxName};\n-- Standalone lookups on (${info.leadingCol || 'prefix'}) are served by covering index ${coveringName};`;
+
+    const ev = new CustomEvent('optimization-lifecycle-event', {
+      detail: {
+        action: 'MERGE',
+        actionLabel: 'Redundant Index Merge & Consolidation',
+        triggerSource: 'Redundant Index Warning Overlay',
+        targetIndex: coveringName,
+        targetTable: 'transactions',
+        columns: info.coveringColumns.length > 0 ? info.coveringColumns : [info.leadingCol],
+        rationale: `Merged redundant index "${idxName}" (same leading column: ${info.leadingCol}) into covering index "${coveringName}". Reclaimed +${info.savedMb || 2.3} MB storage and eliminated duplicate WAL write overhead (-18.5%).`,
+        executedDdl: ddl,
+        executionDurationMs: +(25 + Math.random() * 10).toFixed(1),
+        healthDelta: { before: 54, after: 98, gain: 44 },
+        latencyImpact: { beforeMs: '46.0 ms', afterMs: '1.2 ms', speedup: '97.4% faster' },
+        writeOverheadDelta: '-18.5% WAL write lock reduction',
+        status: 'COMPLETED'
+      }
+    });
+    window.dispatchEvent(ev);
+
+    setImportSuccessNotice(`✓ [Merge Indexes] Successfully consolidated redundant index "${idxName}" into "${coveringName}". Reclaimed +${info.savedMb || 2.3} MB storage and eliminated duplicate WAL writes!`);
+    setTimeout(() => setImportSuccessNotice(null), 5000);
+  };
+
+  const handleConsolidateIndex = (idxName: string) => {
+    handleMergeIndexes(idxName);
+  };
+
+  const detectedRedundantIndexesList = useMemo(() => {
+    const list: Array<{
+      tableName: string;
+      entityName: string;
+      indexName: string;
+      leadingCol: string;
+      coveringIndexName: string;
+      coveringColumns: string[];
+      columns: string[];
+      savedMb: number;
+    }> = [];
+
+    tables.forEach((tbl) => {
+      tbl.indexes.forEach((idx) => {
+        if (idx.active && !removedIndexes.includes(idx.name) && !consolidatedIndexes.includes(idx.name)) {
+          const info = getRedundantIndexInfo(idx.name, idx.columns, tbl.name);
+          if (info.isRedundant) {
+            list.push({
+              tableName: tbl.name,
+              entityName: tbl.entityName || tbl.name,
+              indexName: idx.name,
+              leadingCol: info.leadingCol,
+              coveringIndexName: info.coveringIndexName,
+              coveringColumns: info.coveringColumns,
+              columns: idx.columns,
+              savedMb: info.savedMb
+            });
+          }
+        }
+      });
+    });
+
+    return list;
+  }, [tables, removedIndexes, consolidatedIndexes, createdCompositeIndexes, createdCustomIndexes]);
+
+  const handleMergeAllRedundantIndexes = () => {
+    if (detectedRedundantIndexesList.length === 0) return;
+
+    const names = detectedRedundantIndexesList.map((r) => r.indexName);
+    setConsolidatedIndexes((prev) => Array.from(new Set([...prev, ...names])));
+    setRemovedIndexes((prev) => Array.from(new Set([...prev, ...names])));
+
+    if (names.some((n) => n.includes('email_missing'))) {
+      setCreatedCustomIndexes((prev) => prev.filter((c) => c !== 'customer_email'));
+      setCreatedCompositeIndexes((prev) => Array.from(new Set([...prev, 'email_status'])));
+    }
+    if (names.some((n) => n.includes('amount_missing'))) {
+      setCreatedCustomIndexes((prev) => prev.filter((c) => c !== 'amount'));
+      setCreatedCompositeIndexes((prev) => Array.from(new Set([...prev, 'category_amount'])));
+    }
+    if (names.includes('idx_line_items_tx')) {
+      setCreatedCompositeIndexes((prev) => Array.from(new Set([...prev, 'tx_price'])));
+    }
+
+    setImportSuccessNotice(`✓ [Merge All Redundant Indexes] Successfully consolidated ${names.length} redundant index(es) across tables into single efficient covering indexes! Reclaimed +${(names.length * 2.3).toFixed(1)} MB storage.`);
+    setTimeout(() => setImportSuccessNotice(null), 5500);
+  };
 
   interface ConstraintConflictPair {
     id: string;
@@ -3440,7 +3644,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     }> = [];
 
     tables
-      .filter((tbl) => indexCategoryFilter === 'all' || indexCategoryFilter === 'low-usage' || indexCategoryFilter === tbl.name)
+      .filter((tbl) => indexCategoryFilter === 'all' || indexCategoryFilter === 'low-usage' || indexCategoryFilter === 'redundant' || indexCategoryFilter === tbl.name)
       .forEach((tbl) => {
         const queryLower = indexSearchQuery.trim().toLowerCase();
         tbl.indexes.forEach((idx) => {
@@ -3465,6 +3669,9 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
           const inactivityStats = getIndexInactivityStats(idx.name, idx.active, tbl.name);
 
           if (indexCategoryFilter === 'low-usage' && !inactivityStats.isInactiveOver7Days) {
+            return;
+          }
+          if (indexCategoryFilter === 'redundant' && !isIndexRedundant(idx.name, idx.columns, tbl.name)) {
             return;
           }
 
@@ -3519,7 +3726,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     });
 
     return list;
-  }, [tables, indexCategoryFilter, indexSearchQuery, removedIndexes, lockedIndexes, flags, createdCompositeIndexes, createdCustomIndexes, indexRankSort, lowUsageConfig]);
+  }, [tables, indexCategoryFilter, indexSearchQuery, removedIndexes, lockedIndexes, flags, createdCompositeIndexes, createdCustomIndexes, indexRankSort, lowUsageConfig, consolidatedIndexes]);
 
   const groupedByTableIndexes = useMemo(() => {
     const map = new Map<string, typeof allRankedSchemaIndexes>();
@@ -6262,6 +6469,21 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                   {lowUsageFlaggedCount}
                 </span>
               </button>
+              <button
+                type="button"
+                id="filter-entity-redundant"
+                data-testid="filter-entity-redundant"
+                onClick={() => setIndexCategoryFilter(indexCategoryFilter === 'redundant' ? 'all' : 'redundant')}
+                className={`px-2.5 py-1 rounded-lg font-mono text-[11px] font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
+                  indexCategoryFilter === 'redundant'
+                    ? 'bg-amber-600 text-white shadow-2xs font-bold'
+                    : 'bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300'
+                }`}
+                title="Filter redundant indexes sharing leading columns with composite indexes"
+              >
+                <AlertTriangle className="w-3 h-3 text-amber-600 shrink-0" />
+                <span>Redundant ({detectedRedundantIndexesList.length})</span>
+              </button>
               {tables.map((t) => {
                 const count = t.indexes.length;
                 const isSelected = indexCategoryFilter === t.name;
@@ -6289,6 +6511,47 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                 );
               })}
             </div>
+
+            {/* Redundant Indexes Summary Alert Banner */}
+            {detectedRedundantIndexesList.length > 0 && (
+              <div
+                id="redundant-indexes-summary-alert"
+                data-testid="redundant-indexes-summary-alert"
+                className="p-3.5 bg-gradient-to-r from-amber-50 via-orange-50/70 to-amber-100/70 border-2 border-amber-400 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-950 shadow-xs animate-fadeIn"
+              >
+                <div className="flex items-start gap-3">
+                  <div className="p-2 bg-amber-500 text-white rounded-lg shadow-xs shrink-0 mt-0.5 animate-pulse">
+                    <AlertTriangle className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <strong className="text-sm font-bold text-amber-950">
+                        {detectedRedundantIndexesList.length} Redundant Index{detectedRedundantIndexesList.length > 1 ? 'es' : ''} Detected
+                      </strong>
+                      <span className="font-mono text-[10px] bg-amber-200 text-amber-950 px-2 py-0.5 rounded-full font-bold border border-amber-300">
+                        Shared Leading Columns
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-amber-900 mt-0.5 leading-relaxed">
+                      Multiple indexes share identical leading columns (e.g. {detectedRedundantIndexesList.map(r => `"${r.leadingCol}" on ${r.tableName}`).join(', ')}). B-Tree leaf maintenance increases WAL write overhead (+15%) without query speedup. Consolidate them into single covering composite indexes.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    id="btn-merge-all-redundant-indexes"
+                    data-testid="btn-merge-all-redundant-indexes"
+                    onClick={handleMergeAllRedundantIndexes}
+                    className="px-3.5 py-2 bg-gradient-to-r from-amber-600 via-orange-600 to-indigo-600 hover:from-amber-500 hover:to-indigo-500 text-white font-bold rounded-lg text-xs cursor-pointer shadow-xs transition-all flex items-center gap-1.5 hover:scale-[1.02] active:scale-[0.98]"
+                    title="Merge all detected redundant indexes into covering composite indexes"
+                  >
+                    <GitMerge className="w-4 h-4" />
+                    <span>Merge All ({detectedRedundantIndexesList.length})</span>
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Index List Views: Ranked Index Table vs Grouped by Table Segments vs Cards vs Impact Map */}
             {(showIndexImpactMap || indexListLayout === 'map') ? (
@@ -6421,6 +6684,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                   {indexes.map((item, idx) => {
                                     const { index, health, impact, latencyHeat, usageHeat, inactivityStats, isRemoved, isLocked } = item;
                                     const isSelected = selectedIndexes.includes(index.name);
+                                    const redInfo = getRedundantIndexInfo(index.name, index.columns, tableName);
                                     return (
                                       <tr
                                         key={`grouped-row-${tableName}-${index.name}`}
@@ -6429,6 +6693,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                         className={`transition-colors ${
                                           isSelected
                                             ? 'bg-indigo-50/70 ring-1 ring-indigo-400'
+                                            : redInfo.isRedundant
+                                            ? 'bg-amber-50/60 hover:bg-amber-50/90 ring-1 ring-amber-300'
                                             : showUsageHeatmap
                                             ? usageHeat.rowBgClass
                                             : showIndexImpactHeatmap
@@ -6491,6 +6757,17 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                                 <TrendingUp className="w-2.5 h-2.5 shrink-0" />
                                                 <span>{usageHeat.badgeLabel}</span>
                                               </span>
+                                            )}
+                                            {redInfo.isRedundant && (
+                                              <div
+                                                id={`redundant-warning-grouped-${index.name}`}
+                                                data-testid={`redundant-warning-table-${index.name}`}
+                                                className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100 text-amber-950 border border-amber-300 shadow-2xs animate-fadeIn"
+                                                title={`Redundant index: Shares leading column "${redInfo.leadingCol}" with ${redInfo.coveringIndexName}`}
+                                              >
+                                                <AlertTriangle className="w-3 h-3 text-amber-700 shrink-0" />
+                                                <span>Redundant: Leading Column &ldquo;{redInfo.leadingCol}&rdquo; • Covered by {redInfo.coveringIndexName}</span>
+                                              </div>
                                             )}
                                           </div>
                                         </td>
@@ -6578,6 +6855,22 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                             >
                                               <RefreshCw className="w-3.5 h-3.5" />
                                             </button>
+                                            {redInfo.isRedundant && !isLocked && !isRemoved && (
+                                              <button
+                                                type="button"
+                                                id={`btn-merge-indexes-grouped-${index.name}`}
+                                                data-testid={`btn-merge-indexes-table-${index.name}`}
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  handleMergeIndexes(index.name, redInfo.coveringIndexName);
+                                                }}
+                                                className="px-2.5 py-1 bg-gradient-to-r from-amber-600 to-indigo-600 hover:from-amber-500 hover:to-indigo-500 text-white rounded text-[10px] font-bold shadow-xs cursor-pointer transition-all flex items-center gap-1 shrink-0 hover:scale-[1.02] active:scale-[0.98]"
+                                                title={`Merge redundant index "${index.name}" into "${redInfo.coveringIndexName}"`}
+                                              >
+                                                <GitMerge className="w-3 h-3" />
+                                                <span>Merge Indexes</span>
+                                              </button>
+                                            )}
                                           </div>
                                         </td>
                                       </tr>
@@ -6750,6 +7043,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                         allRankedSchemaIndexes.map((item, idx) => {
                           const { index, table, entityBadge, health, impact, latencyHeat, usageHeat, inactivityStats, isRemoved, isLocked } = item;
                           const isSelected = selectedIndexes.includes(index.name);
+                          const redInfo = getRedundantIndexInfo(index.name, index.columns, table);
                           return (
                             <tr
                               key={`table-row-${table}-${index.name}`}
@@ -6758,6 +7052,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                               className={`transition-colors ${
                                 isSelected
                                   ? 'bg-indigo-50/70 ring-1 ring-indigo-400'
+                                  : redInfo.isRedundant
+                                  ? 'bg-amber-50/60 hover:bg-amber-50/90 ring-1 ring-amber-300'
                                   : showUsageHeatmap
                                   ? usageHeat.rowBgClass
                                   : showIndexImpactHeatmap
@@ -6838,6 +7134,17 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                       <Flame className="w-2.5 h-2.5" />
                                       <span>{latencyHeat.heatIntensity}</span>
                                     </span>
+                                  )}
+                                  {redInfo.isRedundant && (
+                                    <div
+                                      id={`redundant-warning-ranked-${index.name}`}
+                                      data-testid={`redundant-warning-table-${index.name}`}
+                                      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100 text-amber-950 border border-amber-300 shadow-2xs animate-fadeIn"
+                                      title={`Redundant index: Shares leading column "${redInfo.leadingCol}" with ${redInfo.coveringIndexName}`}
+                                    >
+                                      <AlertTriangle className="w-3 h-3 text-amber-700 shrink-0" />
+                                      <span>Redundant: Leading Column &ldquo;{redInfo.leadingCol}&rdquo; • Covered by {redInfo.coveringIndexName}</span>
+                                    </div>
                                   )}
                                 </div>
                                 <div className="text-[10px] text-zinc-500 font-sans mt-0.5 flex items-center gap-1">
@@ -7016,6 +7323,22 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                               {/* Actions & Status */}
                               <td className="py-3 px-3 text-right">
                                 <div className="flex items-center justify-end gap-1.5">
+                                  {redInfo.isRedundant && !isLocked && !isRemoved && (
+                                    <button
+                                      type="button"
+                                      id={`btn-merge-indexes-ranked-${index.name}`}
+                                      data-testid={`btn-merge-indexes-table-${index.name}`}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleMergeIndexes(index.name, redInfo.coveringIndexName);
+                                      }}
+                                      className="px-2.5 py-1 bg-gradient-to-r from-amber-600 to-indigo-600 hover:from-amber-500 hover:to-indigo-500 text-white rounded text-[10px] font-bold shadow-xs cursor-pointer transition-all flex items-center gap-1 shrink-0 hover:scale-[1.02] active:scale-[0.98]"
+                                      title={`Merge redundant index "${index.name}" into "${redInfo.coveringIndexName}"`}
+                                    >
+                                      <GitMerge className="w-3 h-3" />
+                                      <span>Merge Indexes</span>
+                                    </button>
+                                  )}
                                   <button
                                     type="button"
                                     onClick={() => handleToggleLockIndex(index.name)}
@@ -7068,10 +7391,13 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
           ) : (
               <div className="space-y-3.5">
               {tables
-                .filter((tbl) => indexCategoryFilter === 'all' || indexCategoryFilter === tbl.name)
+                .filter((tbl) => indexCategoryFilter === 'all' || indexCategoryFilter === 'redundant' || indexCategoryFilter === tbl.name)
                 .map((tbl) => {
                   const queryLower = indexSearchQuery.trim().toLowerCase();
                   const matchingIndexes = tbl.indexes.filter((idx) => {
+                    if (indexCategoryFilter === 'redundant' && !isIndexRedundant(idx.name, idx.columns, tbl.name)) {
+                      return false;
+                    }
                     if (!queryLower) return true;
                     const matchesName = idx.name.toLowerCase().includes(queryLower);
                     const matchesTargetTable =
@@ -7273,6 +7599,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                               const latencyHeat = calculateIndexLatencyContribution(idx.name, idx.active, tbl.name, isRemoved);
                               const usageHeat = calculateIndexUsageHeatmap(idx.name, idx.active, tbl.name, isRemoved);
                               const isSelected = selectedIndexes.includes(idx.name);
+                              const redInfo = getRedundantIndexInfo(idx.name, idx.columns, tbl.name);
 
                               return (
                                 <div
@@ -7290,6 +7617,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                       ? 'bg-emerald-50/90 border-emerald-500 ring-2 ring-emerald-400 scale-[1.01] shadow-md bg-white'
                                       : isLocked
                                       ? 'border-amber-300 ring-1 ring-amber-200/80 shadow-xs bg-white'
+                                      : redInfo.isRedundant
+                                      ? 'border-amber-400 ring-2 ring-amber-300/80 bg-amber-50/20 shadow-xs'
                                       : idx.active
                                       ? 'border-emerald-300 shadow-2xs bg-white'
                                       : 'border-zinc-200 opacity-80 hover:opacity-100 bg-white'
@@ -7436,31 +7765,59 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                           </div>
                                         );
                                       }
-                                      const redundant = isIndexRedundant(idx.name, idx.columns);
-                                      return redundant ? (
-                                        <div className="mb-2 p-2.5 bg-amber-50 border border-amber-300 rounded-lg flex items-center justify-between text-[11px] text-amber-900 shadow-2xs">
-                                          <div className="flex items-center gap-2 font-semibold">
-                                            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 animate-pulse" />
-                                            <span>Redundant Coverage (Covered by Composite Index)</span>
+                                      if (redInfo.isRedundant) {
+                                        return (
+                                          <div
+                                            id={`redundant-warning-card-${idx.name}`}
+                                            data-testid={`redundant-warning-card-${idx.name}`}
+                                            className="mb-2.5 p-3 bg-gradient-to-r from-amber-50 via-orange-50/80 to-amber-100/70 border-2 border-amber-400 rounded-xl text-amber-950 shadow-xs animate-fadeIn space-y-2"
+                                          >
+                                            <div className="flex items-start justify-between gap-2.5">
+                                              <div className="flex items-start gap-2.5">
+                                                <div className="p-1.5 bg-amber-500 text-white rounded-lg shadow-2xs shrink-0 mt-0.5 animate-pulse">
+                                                  <AlertTriangle className="w-4 h-4" />
+                                                </div>
+                                                <div>
+                                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                                    <strong className="text-xs font-bold text-amber-950">Redundant Index Warning</strong>
+                                                    <span className="font-mono text-[9px] bg-amber-200 text-amber-950 px-1.5 py-0.2 rounded font-bold border border-amber-300">
+                                                      Leading Column: &ldquo;{redInfo.leadingCol}&rdquo;
+                                                    </span>
+                                                  </div>
+                                                  <p className="text-[11px] text-amber-900 mt-1 leading-snug">
+                                                    Shares leading column <strong className="font-mono font-bold text-amber-950">&ldquo;{redInfo.leadingCol}&rdquo;</strong> with composite index <strong className="font-mono font-bold text-indigo-950">{redInfo.coveringIndexName}</strong> ({redInfo.coveringColumns.join(', ')}). B-Tree leftmost prefix matching covers these lookups; maintaining this standalone index causes +{redInfo.writeOverheadPercent || 15}% write overhead.
+                                                  </p>
+                                                </div>
+                                              </div>
+                                              {isLocked ? (
+                                                <span className="px-2.5 py-1 bg-amber-100 text-amber-950 border border-amber-300 font-bold rounded text-[10px] shrink-0">
+                                                  Protected (Locked)
+                                                </span>
+                                              ) : (
+                                                <button
+                                                  type="button"
+                                                  id={`btn-merge-indexes-card-${idx.name}`}
+                                                  data-testid={`btn-merge-indexes-${idx.name}`}
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    handleMergeIndexes(idx.name, redInfo.coveringIndexName);
+                                                  }}
+                                                  className="px-3 py-1.5 bg-gradient-to-r from-amber-600 to-indigo-600 hover:from-amber-500 hover:to-indigo-500 text-white font-bold rounded-lg text-xs shadow-xs cursor-pointer transition-all flex items-center gap-1.5 shrink-0 hover:scale-[1.02] active:scale-[0.98]"
+                                                  title={`Merge redundant index "${idx.name}" into "${redInfo.coveringIndexName}"`}
+                                                >
+                                                  <GitMerge className="w-3.5 h-3.5" />
+                                                  <span>Merge Indexes</span>
+                                                </button>
+                                              )}
+                                            </div>
+                                            <div className="flex items-center justify-between text-[10px] font-mono text-amber-900/90 pt-1 border-t border-amber-200/80">
+                                              <span>Storage reclaimed: <strong>+{redInfo.savedMb || 2.3} MB</strong></span>
+                                              <span>WAL write locks: <strong>-18.5% overhead eliminated</strong></span>
+                                            </div>
                                           </div>
-                                          {isLocked ? (
-                                            <span className="px-2.5 py-1 bg-amber-100 text-amber-900 border border-amber-300 font-bold rounded text-[10px]">
-                                              Protected (Locked)
-                                            </span>
-                                          ) : (
-                                            <button
-                                              type="button"
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                handleConsolidateIndex(idx.name);
-                                              }}
-                                              className="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded text-[10px] shadow-xs cursor-pointer transition-colors"
-                                            >
-                                              Consolidate
-                                            </button>
-                                          )}
-                                        </div>
-                                      ) : null;
+                                        );
+                                      }
+                                      return null;
                                     })()}
 
                                     {/* Target Entity Pill */}
@@ -7638,6 +7995,22 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                         Type: {idx.type} • Columns: ({idx.columns.join(', ')})
                                       </div>
                                       <div className="flex items-center gap-1.5 flex-wrap">
+                                        {redInfo.isRedundant && !isLocked && !isRemoved && (
+                                          <button
+                                            type="button"
+                                            id={`card-action-btn-merge-indexes-${idx.name}`}
+                                            data-testid={`card-action-btn-merge-indexes-${idx.name}`}
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleMergeIndexes(idx.name, redInfo.coveringIndexName);
+                                            }}
+                                            className="px-2.5 py-1 bg-gradient-to-r from-amber-600 to-indigo-600 hover:from-amber-500 hover:to-indigo-500 text-white font-bold rounded text-[10px] shadow-2xs cursor-pointer transition-all flex items-center gap-1 shrink-0 hover:scale-[1.02] active:scale-[0.98]"
+                                            title={`Merge redundant index "${idx.name}" into "${redInfo.coveringIndexName}"`}
+                                          >
+                                            <GitMerge className="w-3 h-3" />
+                                            <span>Merge Indexes</span>
+                                          </button>
+                                        )}
                                         <button
                                           type="button"
                                           id={`btn-drop-index-${idx.name}`}
@@ -8237,6 +8610,20 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
               </button>
               <button
                 type="button"
+                id="btn-side-panel-tab-trend"
+                data-testid="btn-side-panel-tab-trend"
+                onClick={() => setSidePanelViewMode('usage-trend')}
+                className={`flex-1 py-1.5 px-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                  sidePanelViewMode === 'usage-trend'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-zinc-600 hover:text-zinc-900 hover:bg-zinc-200/50'
+                }`}
+              >
+                <Activity className="w-3.5 h-3.5" />
+                <span>7D Trend</span>
+              </button>
+              <button
+                type="button"
                 id="btn-side-panel-tab-correlation"
                 data-testid="btn-side-panel-tab-correlation"
                 onClick={() => setSidePanelViewMode('correlation')}
@@ -8295,6 +8682,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                 createdCompositeIndexes={createdCompositeIndexes}
                 createdCustomIndexes={createdCustomIndexes}
               />
+            ) : sidePanelViewMode === 'usage-trend' ? (
+              <IndexUsageTrendChart tables={tables} />
             ) : sidePanelViewMode === 'correlation' ? (
               <GlobalIndexCorrelationChart />
             ) : sidePanelViewMode === 'history' ? (

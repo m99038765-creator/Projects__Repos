@@ -17,8 +17,10 @@ import { SystemResourceMonitor } from './components/SystemResourceMonitor';
 import { LatencyComparisonView } from './components/LatencyComparisonView';
 import { DatabaseSchemaExplorerView } from './components/DatabaseSchemaExplorerView';
 import { OptimizationWizardModal } from './components/OptimizationWizardModal';
+import { DatabaseBottleneckHeatmapDrawer } from './components/DatabaseBottleneckHeatmapDrawer';
+import { VisualQueryBuilderModal } from './components/VisualQueryBuilderModal';
 import { LatencyLegend } from './components/LatencyLegend';
-import { AlertTriangle, X, Flame, Zap } from 'lucide-react';
+import { AlertTriangle, X, Flame, Zap, BellOff, TrendingUp, FileText, Loader, Sparkles, Search, Clipboard } from 'lucide-react';
 import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
 import {
   exportRecordsToCsv,
@@ -36,7 +38,9 @@ import {
 } from './utils/diagnosticCorrelationPdfGenerator';
 import {
   DatabaseMutationHistoryEntry,
-  DataTapeEntry
+  DataTapeEntry,
+  ExtendedAlertThresholdsConfig,
+  DEFAULT_EXTENDED_ALERT_THRESHOLDS
 } from './types';
 import {
   getDatabaseMutationHistory
@@ -205,11 +209,159 @@ export default function App() {
   const [page, setPage] = useState(1);
   const [pageSize] = useState(100);
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
-  const [alertThresholdMs, setAlertThresholdMs] = useState<number>(100);
+  const [alertThresholdMs, setAlertThresholdMs] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_latency_alert_threshold_ms');
+      return saved ? Number(saved) : 100;
+    } catch {
+      return 100;
+    }
+  });
+
+  const handleAlertThresholdChange = (val: number) => {
+    const clamped = Math.max(10, Math.min(1000, Math.round(val)));
+    setAlertThresholdMs(clamped);
+    try {
+      localStorage.setItem('enterprise_latency_alert_threshold_ms', clamped.toString());
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const [extendedAlertThresholds, setExtendedAlertThresholds] = useState<ExtendedAlertThresholdsConfig>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_extended_alert_thresholds');
+      return saved ? JSON.parse(saved) : DEFAULT_EXTENDED_ALERT_THRESHOLDS;
+    } catch {
+      return DEFAULT_EXTENDED_ALERT_THRESHOLDS;
+    }
+  });
+
+  const handleExtendedAlertThresholdsChange = (config: ExtendedAlertThresholdsConfig) => {
+    setExtendedAlertThresholds(config);
+    try {
+      localStorage.setItem('enterprise_extended_alert_thresholds', JSON.stringify(config));
+    } catch (e) {
+      console.error(e);
+    }
+    if (config.latencyAlertMs !== alertThresholdMs) {
+      handleAlertThresholdChange(config.latencyAlertMs);
+    }
+  };
   const [performanceBudgetMs, setPerformanceBudgetMs] = useState<number>(200);
   const [showLatencyHeatmap, setShowLatencyHeatmap] = useState(true);
   const [showQueryIntensityOverlay, setShowQueryIntensityOverlay] = useState<boolean>(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [isVisualQueryBuilderOpen, setIsVisualQueryBuilderOpen] = useState(false);
+  const [showPdfQueueToast, setShowPdfQueueToast] = useState(false);
+  const [pdfErrorToast, setPdfErrorToast] = useState<string | null>(null);
+  const [isAutoResolveOnSpikeEnabled, setIsAutoResolveOnSpikeEnabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('enterprise_auto_resolve_spike') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const handleToggleAutoResolveSpike = (enabled: boolean) => {
+    setIsAutoResolveOnSpikeEnabled(enabled);
+    try {
+      localStorage.setItem('enterprise_auto_resolve_spike', String(enabled));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleExportPdfClick = () => {
+    try {
+      setIsGeneratingDiagnosticPdf(true);
+      setShowPdfQueueToast(true);
+      setShowPdfPreviewModal(true);
+      setTimeout(() => {
+        setShowPdfQueueToast(false);
+        setIsGeneratingDiagnosticPdf(false);
+        setIsPdfGenerationSuccess(true);
+        setTimeout(() => {
+          setIsPdfGenerationSuccess(false);
+        }, 1000);
+      }, 2500);
+    } catch (err: any) {
+      setIsGeneratingDiagnosticPdf(false);
+      setShowPdfQueueToast(false);
+      setPdfErrorToast('Diagnostic report generation failed. Please try again.');
+      setTimeout(() => {
+        setPdfErrorToast(null);
+      }, 3500);
+    }
+  };
+
+  const handleCancelPdfGeneration = () => {
+    setIsGeneratingDiagnosticPdf(false);
+    setShowPdfQueueToast(false);
+    setShowPdfPreviewModal(false);
+    setPdfErrorToast('PDF diagnostic report generation cancelled.');
+    setTimeout(() => setPdfErrorToast(null), 3000);
+  };
+
+  const handleQuickFixAll = () => {
+    setFlags({
+      batchEagerLoading: true,
+      btreeIndexing: true,
+      queryCaching: true,
+      virtualizedDOM: true,
+      deferredRendering: true
+    });
+    setIsBatchBannerDismissed(true);
+    setProactiveToast({
+      title: '⚡ Quick Fix All Applied',
+      message: 'All optimization flags have been enabled simultaneously to resolve workload bottlenecks.',
+      flagToEnable: 'batchEagerLoading',
+      flagName: 'Batch Eager Loading'
+    });
+  };
+
+  const handleExplainPlanBannerClick = () => {
+    setActiveView('grid');
+    setStatusFilter('slow');
+    setProactiveToast({
+      title: '🔍 Explain Plan: High-Latency Bottleneck',
+      message: 'Explain Plan viewer filtered to sequential table scan and N+1 cascade execution nodes.',
+      flagToEnable: 'batchEagerLoading',
+      flagName: 'Batch Eager Loading'
+    });
+    setTimeout(() => {
+      const el = document.getElementById('explain-plan-viewer-section');
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth' });
+      }
+    }, 100);
+  };
+
+  const [showCopyLogsToast, setShowCopyLogsToast] = useState(false);
+  const [isCopyingLogs, setIsCopyingLogs] = useState(false);
+
+  const handleCopyLogsToClipboard = () => {
+    try {
+      setIsCopyingLogs(true);
+      const logData = JSON.stringify({
+        timestamp: new Date().toISOString(),
+        executionTimeMs: queryResult.executionTimeMs,
+        flags,
+        explainPlanSummary: queryResult.explainPlan?.summary || 'N+1 cascade detected',
+        totalCount: queryResult.totalCount,
+        queryType: queryResult.queryType || 'SELECT'
+      }, null, 2);
+      navigator.clipboard.writeText(logData);
+      setShowCopyLogsToast(true);
+      setTimeout(() => {
+        setShowCopyLogsToast(false);
+        setIsCopyingLogs(false);
+      }, 1500);
+    } catch (e) {
+      setIsCopyingLogs(false);
+      console.error(e);
+    }
+  };
 
   // Plan Cache TTL state (in seconds)
   const [cacheTtlSeconds, setCacheTtlSeconds] = useState<number>(() => {
@@ -262,6 +414,7 @@ export default function App() {
   const [showPdfPreviewModal, setShowPdfPreviewModal] = useState(false);
   const [isOptimizationWizardOpen, setIsOptimizationWizardOpen] = useState(false);
   const [isShortcutsModalOpen, setIsShortcutsModalOpen] = useState(false);
+  const [isBottleneckDrawerOpen, setIsBottleneckDrawerOpen] = useState(false);
   const [shortcutToast, setShortcutToast] = useState<{
     action: string;
     flagName: string;
@@ -324,11 +477,51 @@ export default function App() {
   }));
 
   const [isGeneratingDiagnosticPdf, setIsGeneratingDiagnosticPdf] = useState(false);
+  const [isPdfGenerationSuccess, setIsPdfGenerationSuccess] = useState(false);
   const [isDiagnosticPdfSuccess, setIsDiagnosticPdfSuccess] = useState(false);
   const [thresholdViolationsHistory] = useState<any[]>([]);
   const [mutationHistory] = useState<DatabaseMutationHistoryEntry[]>(() => getDatabaseMutationHistory());
   const [trendHistory, setTrendHistory] = useState<LatencyTrendPoint[]>(() => getInitialTrendHistory());
   const [isSimulatingSequence, setIsSimulatingSequence] = useState(false);
+  const [isBatchBannerDismissed, setIsBatchBannerDismissed] = useState(false);
+  const [showDismissConfirmation, setShowDismissConfirmation] = useState(false);
+  const [batchBannerDismissedUntil, setBatchBannerDismissedUntil] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_batch_banner_dismissed_until');
+      return saved ? Number(saved) : 0;
+    } catch {
+      return 0;
+    }
+  });
+
+  const handleConfirmDismiss5Min = () => {
+    const until = Date.now() + 5 * 60 * 1000;
+    setBatchBannerDismissedUntil(until);
+    try {
+      localStorage.setItem('enterprise_batch_banner_dismissed_until', String(until));
+    } catch (e) {
+      console.error(e);
+    }
+    setIsBatchBannerDismissed(true);
+    setShowDismissConfirmation(false);
+  };
+
+  useEffect(() => {
+    setIsBatchBannerDismissed(false);
+  }, [flags.batchEagerLoading]);
+
+  useEffect(() => {
+    if (!isBatchBannerDismissed && !flags.batchEagerLoading && queryResult.executionTimeMs > 200 && isAutoResolveOnSpikeEnabled) {
+      handleToggleFlag('batchEagerLoading');
+      setIsBatchBannerDismissed(true);
+      setProactiveToast({
+        title: '⚡ Auto-Resolved on Spike',
+        message: 'Latency threshold breached while Auto-Resolve on Spike was active. batchEagerLoading was automatically enabled.',
+        flagToEnable: 'batchEagerLoading',
+        flagName: 'Batch Eager Loading'
+      });
+    }
+  }, [queryResult.executionTimeMs, flags.batchEagerLoading, isBatchBannerDismissed, isAutoResolveOnSpikeEnabled]);
 
   const handleToggleFlag = (key: keyof OptimizationFlags) => {
     setFlags((prev) => {
@@ -659,13 +852,33 @@ export default function App() {
       });
 
       setDataTapeEntries((prev) => [entry, ...prev]);
-      setProactiveToast({
-        title: 'Auto-Capture: Critical Threshold',
-        message: `Performance snapshot auto-captured to Historical Data Tape (${entry.tapeId}): ${triggerEvent}`
-      });
+      if (!notificationsMuted) {
+        setProactiveToast({
+          title: 'Auto-Capture: Critical Threshold',
+          message: `Performance snapshot auto-captured to Historical Data Tape (${entry.tapeId}): ${triggerEvent}`
+        });
+      }
     } catch (err) {
       console.error('Failed to auto-capture performance snapshot:', err);
     }
+  };
+
+  const [notificationsMuted, setNotificationsMuted] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('notificationsMuted') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const handleMuteAllNotifications = () => {
+    try {
+      localStorage.setItem('notificationsMuted', 'true');
+    } catch (e) {
+      console.error('Failed to save notificationsMuted state to localStorage:', e);
+    }
+    setNotificationsMuted(true);
+    setProactiveToast(null);
   };
 
   const [proactiveToast, setProactiveToast] = useState<{
@@ -676,7 +889,40 @@ export default function App() {
   } | null>(null);
 
   useEffect(() => {
-    if (queryResult.executionTimeMs > 130 && !flags.btreeIndexing) {
+    if (notificationsMuted) {
+      setProactiveToast(null);
+      return;
+    }
+
+    // Proactive Alert Trigger: Custom Latency Spike Threshold Breach
+    if (queryResult.executionTimeMs >= alertThresholdMs) {
+      const unoptimizedFlag: keyof OptimizationFlags | null = !flags.btreeIndexing
+        ? 'btreeIndexing'
+        : !flags.batchEagerLoading
+        ? 'batchEagerLoading'
+        : !flags.queryCaching
+        ? 'queryCaching'
+        : !flags.virtualizedDOM
+        ? 'virtualizedDOM'
+        : !flags.deferredRendering
+        ? 'deferredRendering'
+        : null;
+
+      const flagNameMap: Record<keyof OptimizationFlags, string> = {
+        btreeIndexing: 'B-Tree Indexing',
+        batchEagerLoading: 'Batch Eager Loading',
+        queryCaching: 'Query Caching',
+        virtualizedDOM: 'Virtualized DOM',
+        deferredRendering: 'Deferred Rendering'
+      };
+
+      setProactiveToast({
+        title: `⚡ Latency Spike Alert (>${alertThresholdMs}ms Threshold Breach)`,
+        message: `Query execution latency reached ${queryResult.executionTimeMs.toFixed(1)}ms, breaching the custom latency alert threshold of ${alertThresholdMs}ms.`,
+        flagToEnable: unoptimizedFlag || undefined,
+        flagName: unoptimizedFlag ? flagNameMap[unoptimizedFlag] : undefined
+      });
+    } else if (queryResult.executionTimeMs > 130 && !flags.btreeIndexing) {
       setProactiveToast({
         title: 'High Latency Detected',
         message: `Query took ${queryResult.executionTimeMs.toFixed(1)}ms due to sequential table scan.`,
@@ -691,7 +937,142 @@ export default function App() {
         flagName: 'Batch Eager Loading'
       });
     }
-  }, [queryResult.executionTimeMs, flags.btreeIndexing, flags.batchEagerLoading]);
+  }, [
+    queryResult.executionTimeMs,
+    flags.btreeIndexing,
+    flags.batchEagerLoading,
+    flags.queryCaching,
+    flags.virtualizedDOM,
+    flags.deferredRendering,
+    alertThresholdMs,
+    notificationsMuted
+  ]);
+
+  // Predefined threshold for slope of execution time over 3 consecutive data points (in ms/step)
+  const PREDEFINED_SLOPE_THRESHOLD_MS = 15;
+
+  const [anomalyToast, setAnomalyToast] = useState<{
+    id: string;
+    title: string;
+    message: string;
+    slope: number;
+    points: [number, number, number];
+    recommendation: string;
+    flagToEnable?: keyof OptimizationFlags;
+    flagName?: string;
+  } | null>(null);
+
+  const lastAnomalyPointIdRef = useRef<string | null>(null);
+
+  // Background Observer: Monitors latency spikes in trendHistory and triggers a 'Performance Anomaly' toast
+  // with a recommendation if the slope of execution time exceeds the threshold over the dynamic moving average trend window (anomalyTrendWindowSec).
+  useEffect(() => {
+    if (notificationsMuted || !extendedAlertThresholds.enabled) {
+      setAnomalyToast(null);
+      return;
+    }
+
+    if (!trendHistory || trendHistory.length < 2) {
+      return;
+    }
+
+    const windowSec = extendedAlertThresholds.anomalyTrendWindowSec || 15;
+    const now = Date.now();
+    const windowStartMs = now - windowSec * 1000;
+
+    // Filter points falling within the dynamic moving average trend window
+    const windowPoints = trendHistory.filter((pt) => pt.timestamp >= windowStartMs);
+
+    if (windowPoints.length < 2) {
+      return;
+    }
+
+    const latestPoint = windowPoints[windowPoints.length - 1];
+    if (lastAnomalyPointIdRef.current === latestPoint.id) {
+      return;
+    }
+
+    const firstPointInWindow = windowPoints[0];
+    const latencyDelta = latestPoint.executionTimeMs - firstPointInWindow.executionTimeMs;
+    const timeDeltaSec = Math.max(1, (latestPoint.timestamp - firstPointInWindow.timestamp) / 1000);
+    const slopePerSec = latencyDelta / timeDeltaSec;
+
+    // Threshold for slope per second (e.g. > 1.5 ms/sec acceleration over window)
+    const SLOPE_THRESHOLD_PER_SEC = 1.5;
+    const isAnomaly = slopePerSec >= SLOPE_THRESHOLD_PER_SEC && latencyDelta > 10;
+
+    if (isAnomaly) {
+      lastAnomalyPointIdRef.current = latestPoint.id;
+
+      let recommendation = '';
+      let flagToEnable: keyof OptimizationFlags | undefined = undefined;
+      let flagName: string | undefined = undefined;
+
+      if (!flags.btreeIndexing) {
+        flagToEnable = 'btreeIndexing';
+        flagName = 'B-Tree Indexing';
+        recommendation = `Sequential table scans compounding over the ${windowSec}s trend window. Enable B-Tree Indexing to flatten query execution slope.`;
+      } else if (!flags.batchEagerLoading) {
+        flagToEnable = 'batchEagerLoading';
+        flagName = 'Batch Eager Loading';
+        recommendation = `N+1 query cascades accelerating over the ${windowSec}s window. Enable Batch Eager Loading to consolidate roundtrips.`;
+      } else if (!flags.queryCaching) {
+        flagToEnable = 'queryCaching';
+        flagName = 'Query Caching';
+        recommendation = `Frequent repetitive query hits over the ${windowSec}s trend window. Enable Query Caching.`;
+      } else {
+        recommendation = `Workload contention escalating over the ${windowSec}s monitoring window. Inspect Database Bottleneck Heatmap.`;
+      }
+
+      const p0 = firstPointInWindow.executionTimeMs;
+      const p1 = windowPoints[Math.floor(windowPoints.length / 2)].executionTimeMs;
+      const p2 = latestPoint.executionTimeMs;
+
+      setAnomalyToast({
+        id: latestPoint.id,
+        title: 'Performance Anomaly',
+        message: `Steep latency acceleration (+${slopePerSec.toFixed(1)}ms/sec over ${windowSec}s window: ${p0.toFixed(1)}ms → ${p2.toFixed(1)}ms).`,
+        slope: slopePerSec,
+        points: [p0, p1, p2],
+        recommendation,
+        flagToEnable,
+        flagName
+      });
+
+      setProactiveToast({
+        title: 'Performance Anomaly',
+        message: `Dynamic trend window (${windowSec}s) detected latency slope of +${slopePerSec.toFixed(1)}ms/sec. ${recommendation}`,
+        flagToEnable,
+        flagName
+      });
+    }
+  }, [trendHistory, flags, extendedAlertThresholds, notificationsMuted]);
+
+  // Extended multi-metric alerting watchdog (Lock wait times & Page faults)
+  useEffect(() => {
+    if (notificationsMuted || !extendedAlertThresholds.enabled) {
+      return;
+    }
+
+    const estimatedPageFaults = Math.round(queryResult.executionTimeMs / 5 + (!flags.btreeIndexing ? 18 : 2) + (!flags.batchEagerLoading ? 25 : 0));
+    const estimatedLockWaitMs = !flags.btreeIndexing ? 32.5 : !flags.batchEagerLoading ? 18.2 : 2.1;
+
+    if (estimatedLockWaitMs > extendedAlertThresholds.lockWaitAlertMs) {
+      setProactiveToast({
+        title: `🔒 Lock Contention Alert (>${extendedAlertThresholds.lockWaitAlertMs}ms Threshold)`,
+        message: `Estimated table lock wait time reached ${estimatedLockWaitMs.toFixed(1)}ms, exceeding your custom lock wait alert threshold of ${extendedAlertThresholds.lockWaitAlertMs}ms.`,
+        flagToEnable: !flags.btreeIndexing ? 'btreeIndexing' : 'batchEagerLoading',
+        flagName: !flags.btreeIndexing ? 'B-Tree Indexing' : 'Batch Eager Loading'
+      });
+    } else if (estimatedPageFaults > extendedAlertThresholds.pageFaultsAlertCount) {
+      setProactiveToast({
+        title: `💾 Buffer Page Faults Alert (>${extendedAlertThresholds.pageFaultsAlertCount} Faults)`,
+        message: `Buffer pool page misses reached ${estimatedPageFaults} faults, exceeding your custom page faults alert threshold of ${extendedAlertThresholds.pageFaultsAlertCount} faults.`,
+        flagToEnable: 'queryCaching',
+        flagName: 'Query Caching'
+      });
+    }
+  }, [queryResult.executionTimeMs, flags, extendedAlertThresholds, notificationsMuted]);
 
   const handleGenerateDiagnosticCorrelationPdf = async () => {
     setIsGeneratingDiagnosticPdf(true);
@@ -711,6 +1092,47 @@ export default function App() {
     } finally {
       setIsGeneratingDiagnosticPdf(false);
     }
+  };
+
+  const handleSimulateSlopeAnomaly = () => {
+    const now = Date.now();
+    const p1: LatencyTrendPoint = {
+      id: `pt-anomaly-1-${now}`,
+      timestamp: now - 4000,
+      timeFormatted: new Date(now - 4000).toLocaleTimeString(),
+      executionTimeMs: 12.0,
+      rowsScanned: 5000,
+      activeQueriesCount: 2,
+      cacheHit: false,
+      flags: { ...flags },
+      triggerEvent: 'Anomaly Sequence: Step 1 (Normal Latency)',
+      simulatedError: null
+    };
+    const p2: LatencyTrendPoint = {
+      id: `pt-anomaly-2-${now}`,
+      timestamp: now - 2000,
+      timeFormatted: new Date(now - 2000).toLocaleTimeString(),
+      executionTimeMs: 48.0,
+      rowsScanned: 25000,
+      activeQueriesCount: 6,
+      cacheHit: false,
+      flags: { ...flags },
+      triggerEvent: 'Anomaly Sequence: Step 2 (Latency Spike +36ms)',
+      simulatedError: null
+    };
+    const p3: LatencyTrendPoint = {
+      id: `pt-anomaly-3-${now}`,
+      timestamp: now,
+      timeFormatted: new Date(now).toLocaleTimeString(),
+      executionTimeMs: 98.0,
+      rowsScanned: 50000,
+      activeQueriesCount: 15,
+      cacheHit: false,
+      flags: { ...flags },
+      triggerEvent: 'Anomaly Sequence: Step 3 (Slope Exceeded Threshold)',
+      simulatedError: null
+    };
+    setTrendHistory((prev) => [...prev, p1, p2, p3]);
   };
 
   const handleExportCsv = () => {
@@ -825,6 +1247,12 @@ export default function App() {
         cacheTtl={cacheTtlSeconds}
         onCacheTtlChange={handleCacheTtlChange}
         onPurgePlanCache={handlePurgePlanCache}
+        alertThresholdMs={alertThresholdMs}
+        onAlertThresholdChange={handleAlertThresholdChange}
+        trendHistory={trendHistory}
+        onSimulateSlopeAnomaly={handleSimulateSlopeAnomaly}
+        extendedAlertThresholds={extendedAlertThresholds}
+        onExtendedAlertThresholdsChange={handleExtendedAlertThresholdsChange}
       />
 
       <MetricsBar
@@ -839,7 +1267,7 @@ export default function App() {
         autoRefreshEnabled={autoRefreshEnabled}
         onToggleAutoRefresh={(enabled) => setAutoRefreshEnabled(enabled)}
         alertThresholdMs={alertThresholdMs}
-        onAlertThresholdChange={(val) => setAlertThresholdMs(val)}
+        onAlertThresholdChange={handleAlertThresholdChange}
         heatmapModeEnabled={showLatencyHeatmap}
         onToggleHeatmapMode={setShowLatencyHeatmap}
         performanceBudgetMs={performanceBudgetMs}
@@ -859,6 +1287,9 @@ export default function App() {
           setDataTapeEntries([]);
           setProactiveToast(null);
         }}
+        onOpenBottleneckHeatmap={() => setIsBottleneckDrawerOpen(true)}
+        onOpenVisualQueryBuilder={() => setIsVisualQueryBuilderOpen(true)}
+        onOpenPdfPreview={() => setShowPdfPreviewModal(true)}
       />
 
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 space-y-4">
@@ -889,20 +1320,260 @@ export default function App() {
           </div>
         )}
 
+        {/* Conditional Notification Banner: batchEagerLoading is false and latency exceeds 200ms */}
+        {!isBatchBannerDismissed && Date.now() > batchBannerDismissedUntil && !flags.batchEagerLoading && queryResult.executionTimeMs > 200 && (
+          <div
+            id="banner-batch-eager-loading-latency"
+            data-testid="banner-batch-eager-loading-latency"
+            className="p-4 bg-gradient-to-r from-rose-900 via-rose-950 to-amber-950 text-white rounded-2xl border-2 border-rose-500 shadow-2xl flex flex-col md:flex-row md:items-center justify-between gap-4 animate-fadeIn relative z-40 ring-4 ring-rose-500/20"
+          >
+            <div className="flex items-start md:items-center gap-3.5 w-full">
+              <div className="p-2.5 bg-rose-600 text-white rounded-xl shadow-md shrink-0 animate-pulse mt-0.5 md:mt-0">
+                <AlertTriangle className="w-6 h-6 text-amber-300" />
+              </div>
+              <div className="space-y-1 w-full">
+                {pdfErrorToast && (
+                  <div className="p-2.5 bg-rose-900/90 border border-rose-500 text-rose-100 rounded-xl text-xs font-mono font-bold shadow-lg flex items-center justify-between gap-2 mb-2 animate-fadeIn">
+                    <span>⚠️ {pdfErrorToast}</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        id="btn-retry-export-pdf"
+                        data-testid="btn-retry-export-pdf"
+                        onClick={() => {
+                          setPdfErrorToast(null);
+                          handleExportPdfClick();
+                        }}
+                        className="px-2.5 py-1 bg-rose-700 hover:bg-rose-600 text-white rounded text-[11px] font-bold cursor-pointer transition-colors shadow"
+                      >
+                        Retry
+                      </button>
+                      <button onClick={() => setPdfErrorToast(null)} className="text-rose-300 hover:text-white cursor-pointer">✕</button>
+                    </div>
+                  </div>
+                )}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:flex lg:flex-wrap lg:items-center gap-2 w-full">
+                  <h3 className="font-extrabold text-sm text-white tracking-wide">
+                    ⚠️ Critical Latency Alert: Batch Eager Loading Disabled
+                  </h3>
+                  <span className="font-mono text-[11px] bg-rose-600 text-white px-2.5 py-0.5 rounded-full font-bold uppercase shadow-xs">
+                    Latency: {queryResult.executionTimeMs.toFixed(1)} ms (&gt; 200ms threshold)
+                  </span>
+                  <span className="font-mono text-[10px] bg-amber-500/20 text-amber-300 border border-amber-400/30 px-2 py-0.5 rounded-full font-semibold">
+                    flag: batchEagerLoading = false
+                  </span>
+                  <div className="flex items-center gap-1.5 bg-rose-950/80 px-2 py-1 rounded-lg border border-rose-500/40 shrink-0" title="Recent latency trend leading up to breach">
+                    <span className="text-[9px] font-mono text-rose-300">Trend:</span>
+                    <svg width={50} height={18} className="overflow-visible">
+                      {(() => {
+                        const points = (trendHistory || []).slice(-6);
+                        const lats = points.length >= 2 ? points.map(p => p.executionTimeMs) : [120, 150, 190, 240, 280, queryResult.executionTimeMs];
+                        const min = Math.min(...lats);
+                        const max = Math.max(...lats, min + 1);
+                        const coords = lats.map((v, i) => {
+                          const x = (i / (lats.length - 1)) * 44;
+                          const y = 16 - ((v - min) / (max - min || 1)) * 12 - 2;
+                          return `${x.toFixed(1)},${y.toFixed(1)}`;
+                        }).join(' ');
+                        return (
+                          <polyline
+                            fill="none"
+                            stroke="#f87171"
+                            strokeWidth="1.75"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            points={coords}
+                          />
+                        );
+                      })()}
+                    </svg>
+                  </div>
+                </div>
+                <p className="text-xs text-rose-200/90 leading-relaxed max-w-3xl">
+                  Query latency has reached <strong className="text-white font-mono">{queryResult.executionTimeMs.toFixed(1)}ms</strong> (exceeding the 200ms threshold) because <strong className="text-amber-300 font-mono">batchEagerLoading</strong> is currently disabled, triggering an unbatched N+1 child query cascade across line item relationships.
+                </p>
+                <div className="flex items-center gap-2 mt-2 flex-wrap">
+                  <span className="font-mono text-[11px] bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 px-2.5 py-0.5 rounded-full font-bold flex items-center gap-1 shadow-xs">
+                    <span>⚡ Projected Latency Gain:</span>
+                    <span className="text-white font-extrabold">-{Math.max(45, Math.round(queryResult.executionTimeMs * 0.55))} ms reduction</span>
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap shrink-0">
+              <label className="flex items-center gap-2 cursor-pointer select-none bg-zinc-950/60 hover:bg-zinc-950/80 px-3 py-2 rounded-xl border border-rose-500/40 transition-colors">
+                <input
+                  type="checkbox"
+                  id="toggle-auto-resolve-spike"
+                  data-testid="toggle-auto-resolve-spike"
+                  checked={isAutoResolveOnSpikeEnabled}
+                  onChange={(e) => handleToggleAutoResolveSpike(e.target.checked)}
+                  className="w-4 h-4 accent-rose-500 rounded cursor-pointer"
+                />
+                <span className="text-xs font-mono font-bold text-rose-200">Auto-Resolve on Spike</span>
+              </label>
+              <button
+                type="button"
+                id="btn-quick-fix-all-banner"
+                data-testid="btn-quick-fix-all-banner"
+                onClick={handleQuickFixAll}
+                className="px-3.5 py-2 bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-600 hover:from-emerald-400 hover:to-teal-400 text-zinc-950 font-extrabold text-xs rounded-xl shadow-lg cursor-pointer transition-all flex items-center gap-1.5 border border-emerald-300 hover:scale-105 active:scale-95 shadow-emerald-950/50"
+                title="Automatically enable all optimization flags for immediate resolution"
+              >
+                <Sparkles className="w-3.5 h-3.5 fill-zinc-950 text-zinc-950" />
+                <span>Quick Fix All</span>
+              </button>
+              <button
+                type="button"
+                id="btn-explain-plan-banner"
+                data-testid="btn-explain-plan-banner"
+                onClick={handleExplainPlanBannerClick}
+                className="px-3.5 py-2 bg-gradient-to-r from-amber-600 via-orange-600 to-amber-700 hover:from-amber-500 hover:to-orange-500 text-white font-extrabold text-xs rounded-xl shadow-lg cursor-pointer transition-all flex items-center gap-1.5 border border-amber-400/40 hover:scale-105 active:scale-95 shadow-amber-950/50"
+                title="View explain plan filtered to high-latency bottleneck queries"
+              >
+                <Search className="w-3.5 h-3.5 text-amber-200" />
+                <span>Explain Plan</span>
+              </button>
+              <button
+                type="button"
+                id="btn-toggle-batch-eager-loading-banner"
+                data-testid="btn-toggle-batch-eager-loading"
+                onClick={() => handleToggleFlag('batchEagerLoading')}
+                className="px-4 py-2 bg-gradient-to-r from-amber-400 to-rose-400 hover:from-amber-300 hover:to-rose-300 text-zinc-950 font-extrabold text-xs rounded-xl shadow-lg cursor-pointer transition-all flex items-center gap-2 hover:scale-[1.02] active:scale-[0.98]"
+                title="Toggle batchEagerLoading optimization flag"
+              >
+                <Zap className="w-4 h-4 fill-zinc-950 text-zinc-950" />
+                <span>Toggle batchEagerLoading</span>
+              </button>
+              <div className="relative">
+                {showPdfQueueToast && (
+                  <div className="absolute -top-10 left-1/2 -translate-x-1/2 bg-zinc-900 border border-emerald-500/60 text-emerald-300 px-3 py-1 rounded-xl text-[11px] font-mono font-bold shadow-2xl animate-bounce whitespace-nowrap z-50 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                    <span>Report queued for generation</span>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  id="btn-export-pdf-batch-banner"
+                  data-testid="btn-export-pdf-batch-banner"
+                  onClick={handleExportPdfClick}
+                  disabled={isGeneratingDiagnosticPdf}
+                  className={`px-3.5 py-2 font-bold rounded-xl text-xs shadow-lg flex items-center gap-2 transition-all ${
+                    isPdfGenerationSuccess
+                      ? 'ring-4 ring-emerald-400 bg-gradient-to-r from-emerald-600 to-teal-600 scale-105 shadow-emerald-950/80 animate-pulse text-white'
+                      : isGeneratingDiagnosticPdf
+                      ? 'bg-gradient-to-r from-indigo-600 via-purple-600 to-indigo-600 text-white opacity-70 cursor-not-allowed'
+                      : 'bg-gradient-to-r from-indigo-600 via-purple-600 to-indigo-600 hover:from-indigo-500 hover:to-purple-500 text-white cursor-pointer hover:scale-105 active:scale-95 hover:animate-pulse'
+                  } border border-indigo-400/40 shadow-indigo-950/50`}
+                  title="Generates a correlation diagnostic report"
+                >
+                  {isGeneratingDiagnosticPdf ? (
+                    <Loader className="w-3.5 h-3.5 text-indigo-200 animate-spin" />
+                  ) : (
+                    <FileText className="w-3.5 h-3.5 text-indigo-200" />
+                  )}
+                  <span>{isGeneratingDiagnosticPdf ? 'Generating PDF...' : 'Export to PDF'}</span>
+                  <span className={`text-[10px] font-mono px-1.5 py-0.2 rounded font-extrabold uppercase ${
+                    isGeneratingDiagnosticPdf
+                      ? 'bg-amber-500/30 text-amber-200 border border-amber-400/50 animate-pulse'
+                      : showPdfQueueToast
+                      ? 'bg-emerald-500/30 text-emerald-200 border border-emerald-400/50'
+                      : 'bg-zinc-800 text-zinc-300 border border-zinc-700'
+                  }`}>
+                    {isGeneratingDiagnosticPdf ? 'Processing' : showPdfQueueToast ? 'Queued' : 'Ready'}
+                  </span>
+                </button>
+                {isGeneratingDiagnosticPdf && (
+                  <button
+                    type="button"
+                    id="btn-cancel-export-pdf"
+                    data-testid="btn-cancel-export-pdf"
+                    onClick={handleCancelPdfGeneration}
+                    className="px-3.5 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-bold rounded-xl text-xs shadow transition-all cursor-pointer border border-zinc-700 ml-2"
+                    title="Cancel ongoing diagnostic generation"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+              <div className="relative">
+                {showCopyLogsToast && (
+                  <div className="absolute -top-10 left-1/2 -translate-x-1/2 bg-zinc-900 border border-emerald-500/60 text-emerald-300 px-3 py-1 rounded-xl text-[11px] font-mono font-bold shadow-2xl animate-bounce whitespace-nowrap z-50 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                    <span>Logs copied to clipboard</span>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  id="btn-copy-logs-banner"
+                  data-testid="btn-copy-logs-banner"
+                  onClick={handleCopyLogsToClipboard}
+                  className={`p-2 rounded-xl transition-all duration-300 cursor-pointer border ${
+                    isCopyingLogs
+                      ? 'bg-emerald-800/60 border-emerald-400 text-white scale-110 shadow-lg shadow-emerald-950/50'
+                      : 'text-indigo-300 hover:text-white hover:bg-indigo-800/40 border-transparent hover:border-indigo-400/50'
+                  }`}
+                  title={`System Bottleneck State Preview:\n• Current Latency: ${queryResult.executionTimeMs.toFixed(1)}ms | N+1 Cascade: ${queryResult.activeQueries || 101} queries\n• Click to stringify diagnostics for external reporting`}
+                >
+                  <Clipboard className={`w-4 h-4 transition-transform duration-300 ${isCopyingLogs ? 'scale-125 text-emerald-300 animate-pulse' : ''}`} />
+                </button>
+              </div>
+              <div className="relative">
+                {showDismissConfirmation && (
+                  <div className="absolute -top-28 right-0 bg-zinc-900 border border-rose-500/80 text-white p-3 rounded-xl text-xs shadow-2xl z-50 w-64 space-y-2 animate-fadeIn">
+                    <div className="font-extrabold text-rose-300">Dismiss banner?</div>
+                    <p className="text-[11px] text-zinc-300">Suppress this warning and do not show again for 5 minutes during troubleshooting.</p>
+                    <div className="flex items-center justify-end gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => setShowDismissConfirmation(false)}
+                        className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded text-[11px] font-bold cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        id="btn-confirm-dismiss-5min"
+                        data-testid="btn-confirm-dismiss-5min"
+                        onClick={handleConfirmDismiss5Min}
+                        className="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded text-[11px] font-bold cursor-pointer shadow"
+                      >
+                        Confirm (5m)
+                      </button>
+                    </div>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  id="btn-dismiss-batch-eager-loading-banner"
+                  data-testid="btn-dismiss-batch-eager-loading-banner"
+                  onClick={() => setShowDismissConfirmation(!showDismissConfirmation)}
+                  className="p-2 text-rose-300 hover:text-white hover:bg-rose-800/40 rounded-xl transition-colors cursor-pointer"
+                  title="Dismiss notification banner (Suppress for 5 minutes)"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {activeView === 'grid' ? (
           <>
-            <ExplainPlanViewer
-              result={queryResult}
-              explainPlan={queryResult.explainPlan}
-              flags={flags}
-              statusFilter={statusFilter}
-              categoryFilter={selectedCategory}
-              searchTerm={searchQuery}
-              cacheTtl={cacheTtlSeconds}
-              onCacheTtlChange={handleCacheTtlChange}
-              onPurgeCache={handlePurgePlanCache}
-              onRefreshPlan={() => setRefreshKey((k) => k + 1)}
-            />
+            <div id="explain-plan-viewer-section">
+              <ExplainPlanViewer
+                result={queryResult}
+                explainPlan={queryResult.explainPlan}
+                flags={flags}
+                statusFilter={statusFilter}
+                categoryFilter={selectedCategory}
+                searchTerm={searchQuery}
+                cacheTtl={cacheTtlSeconds}
+                onCacheTtlChange={handleCacheTtlChange}
+                onPurgeCache={handlePurgePlanCache}
+                onRefreshPlan={() => setRefreshKey((k) => k + 1)}
+              />
+            </div>
 
             <LatencyLegend showLatencyHeatmap={showLatencyHeatmap} />
 
@@ -1092,6 +1763,26 @@ export default function App() {
         onOpenBenchmark={() => setIsBenchmarkModalOpen(true)}
       />
 
+      {/* Database Bottleneck Heatmap Drawer */}
+      <DatabaseBottleneckHeatmapDrawer
+        isOpen={isBottleneckDrawerOpen}
+        onClose={() => setIsBottleneckDrawerOpen(false)}
+        flags={flags}
+        onToggleFlag={handleToggleFlag}
+        queryResult={queryResult}
+        trendHistory={trendHistory}
+      />
+
+      {/* Visual SQL Query Builder & Optimizer Modal */}
+      <VisualQueryBuilderModal
+        isOpen={isVisualQueryBuilderOpen}
+        onClose={() => setIsVisualQueryBuilderOpen(false)}
+        flags={flags}
+        onExecuteBuiltQuery={(sql) => {
+          console.log('Executing built query:', sql);
+        }}
+      />
+
       {/* Shortcut Execution Feedback Toast */}
       {shortcutToast && (
         <div
@@ -1133,8 +1824,12 @@ export default function App() {
       )}
 
       {/* Proactive Optimization Suggestion Toast */}
-      {proactiveToast && (
-        <div className="fixed bottom-6 left-6 z-50 bg-zinc-900 border border-zinc-700 text-white p-4 rounded-xl shadow-2xl max-w-md animate-fadeIn flex items-start gap-3">
+      {proactiveToast && !notificationsMuted && (
+        <div
+          id="proactive-optimization-toast"
+          data-testid="proactive-optimization-toast"
+          className="fixed bottom-6 left-6 z-50 bg-zinc-900 border border-zinc-700 text-white p-4 rounded-xl shadow-2xl max-w-md animate-fadeIn flex items-start gap-3"
+        >
           <div className="p-2 bg-amber-500/20 border border-amber-500/40 text-amber-400 rounded-lg shrink-0">
             <AlertTriangle className="w-5 h-5 animate-pulse" />
           </div>
@@ -1143,19 +1838,29 @@ export default function App() {
               <span>{proactiveToast.title}</span>
               <button
                 type="button"
+                id="btn-proactive-close"
+                data-testid="btn-proactive-close"
                 onClick={() => setProactiveToast(null)}
                 className="text-zinc-400 hover:text-white cursor-pointer p-0.5"
+                title="Dismiss"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
             </h4>
             <p className="text-xs text-zinc-300 mt-0.5">
-              {proactiveToast.message} Proactively suggest enabling <strong className="text-amber-300">{proactiveToast.flagName}</strong> to optimize performance.
+              {proactiveToast.message}
+              {proactiveToast.flagName && (
+                <>
+                  {' '}Proactively suggest enabling <strong className="text-amber-300">{proactiveToast.flagName}</strong> to optimize performance.
+                </>
+              )}
             </p>
-            {proactiveToast.flagToEnable && (
-              <div className="mt-3 flex items-center gap-2">
+            <div className="mt-3 flex items-center gap-2 flex-wrap">
+              {proactiveToast.flagToEnable && (
                 <button
                   type="button"
+                  id="btn-proactive-enable-flag"
+                  data-testid="btn-proactive-enable-flag"
                   onClick={() => {
                     if (proactiveToast.flagToEnable) {
                       setFlags((prev) => ({ ...prev, [proactiveToast.flagToEnable!]: true }));
@@ -1166,15 +1871,109 @@ export default function App() {
                 >
                   Enable {proactiveToast.flagName} Now
                 </button>
+              )}
+              <button
+                type="button"
+                id="btn-proactive-dismiss"
+                data-testid="btn-proactive-dismiss"
+                onClick={() => setProactiveToast(null)}
+                className="px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs rounded-lg transition-colors cursor-pointer"
+              >
+                Dismiss
+              </button>
+              <button
+                type="button"
+                id="btn-mute-all-notifications"
+                data-testid="btn-mute-all-notifications"
+                onClick={handleMuteAllNotifications}
+                className="px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 hover:text-white border border-zinc-700 text-zinc-300 text-xs rounded-lg transition-colors cursor-pointer flex items-center gap-1.5"
+                title="Persist mute state in localStorage to prevent all further proactive notification toasts"
+              >
+                <BellOff className="w-3.5 h-3.5 text-zinc-400" />
+                <span>Mute All Notifications</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Performance Anomaly Toast */}
+      {anomalyToast && !notificationsMuted && (
+        <div
+          id="toast-performance-anomaly"
+          data-testid="toast-performance-anomaly performance-anomaly-toast"
+          className="fixed bottom-6 right-6 z-50 bg-gradient-to-br from-zinc-950 via-rose-950/95 to-zinc-900 border-2 border-rose-500/80 text-white p-4 rounded-2xl shadow-2xl max-w-md animate-fadeIn flex items-start gap-3.5 ring-4 ring-rose-500/20"
+        >
+          <div className="p-2.5 bg-rose-600 text-white rounded-xl shrink-0 shadow-md animate-bounce">
+            <TrendingUp className="w-5 h-5 text-amber-200" />
+          </div>
+          <div className="flex-1">
+            <h4 className="text-xs font-extrabold text-white flex items-center justify-between">
+              <span className="flex items-center gap-1.5 uppercase tracking-wide text-rose-300">
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                Performance Anomaly
+              </span>
+              <button
+                type="button"
+                id="btn-anomaly-dismiss"
+                data-testid="btn-anomaly-dismiss"
+                onClick={() => setAnomalyToast(null)}
+                className="text-zinc-400 hover:text-white cursor-pointer p-0.5 rounded transition-colors"
+                title="Dismiss"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </h4>
+
+            <div className="mt-1.5 space-y-1.5">
+              <p className="text-xs text-zinc-200 leading-relaxed">
+                Slope exceeded threshold: <strong className="text-rose-400 font-mono">+{anomalyToast.slope.toFixed(1)}ms/step</strong> over 3 consecutive data points (<span className="font-mono text-[11px] text-amber-300">{anomalyToast.points.map((p) => p.toFixed(1) + 'ms').join(' → ')}</span>).
+              </p>
+              <div className="p-2.5 bg-rose-950/70 rounded-xl border border-rose-800/70 text-[11px] text-rose-100">
+                <strong className="text-amber-300 font-semibold block mb-0.5">Recommendation:</strong>
+                {anomalyToast.recommendation}
+              </div>
+            </div>
+
+            <div className="mt-3 flex items-center gap-2 flex-wrap">
+              {anomalyToast.flagToEnable && (
                 <button
                   type="button"
-                  onClick={() => setProactiveToast(null)}
-                  className="px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs rounded-lg transition-colors cursor-pointer"
+                  id="btn-anomaly-apply-fix"
+                  data-testid="btn-anomaly-apply-fix"
+                  onClick={() => {
+                    if (anomalyToast.flagToEnable) {
+                      handleToggleFlag(anomalyToast.flagToEnable);
+                    }
+                    setAnomalyToast(null);
+                  }}
+                  className="px-3 py-1.5 bg-gradient-to-r from-amber-500 to-rose-600 hover:from-amber-400 hover:to-rose-500 text-zinc-950 font-bold text-xs rounded-lg transition-all cursor-pointer flex items-center gap-1 shadow-sm active:scale-95"
                 >
-                  Dismiss
+                  <Zap className="w-3.5 h-3.5 text-zinc-950" />
+                  <span>Enable {anomalyToast.flagName} Now</span>
                 </button>
-              </div>
-            )}
+              )}
+              <button
+                type="button"
+                id="btn-anomaly-close"
+                data-testid="btn-anomaly-close"
+                onClick={() => setAnomalyToast(null)}
+                className="px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs rounded-lg transition-colors cursor-pointer"
+              >
+                Dismiss
+              </button>
+              <button
+                type="button"
+                id="btn-mute-anomaly-notifications"
+                data-testid="btn-mute-anomaly-notifications"
+                onClick={handleMuteAllNotifications}
+                className="px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 hover:text-white border border-zinc-700 text-zinc-300 text-xs rounded-lg transition-colors cursor-pointer flex items-center gap-1.5"
+                title="Persist mute state in localStorage to prevent all further notifications"
+              >
+                <BellOff className="w-3.5 h-3.5 text-zinc-400" />
+                <span>Mute All</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

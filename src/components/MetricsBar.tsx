@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { QueryExecutionResult, OptimizationFlags } from '../types';
-import { Clock, Database, Layers, Monitor, CheckCircle, AlertTriangle, Zap, Sparkles } from 'lucide-react';
+import { Clock, Database, Layers, Monitor, CheckCircle, AlertTriangle, Zap, Sparkles, Flame, Wrench, FileText } from 'lucide-react';
 
 interface AnimatedCounterOptions {
   duration?: number;
@@ -94,6 +94,9 @@ interface MetricsBarProps {
   onToggleFlag?: (flag: keyof OptimizationFlags) => void;
   onApplyFlags?: (flags: OptimizationFlags) => void;
   onAutoOptimize?: () => void;
+  onOpenBottleneckHeatmap?: () => void;
+  onOpenVisualQueryBuilder?: () => void;
+  onOpenPdfPreview?: () => void;
 }
 
 export const MetricsBar: React.FC<MetricsBarProps> = ({
@@ -116,7 +119,10 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
   onPerformanceBudgetChange,
   onToggleFlag,
   onApplyFlags,
-  onAutoOptimize
+  onAutoOptimize,
+  onOpenBottleneckHeatmap,
+  onOpenVisualQueryBuilder,
+  onOpenPdfPreview
 }) => {
   const safeFlags = flags || {
     batchEagerLoading: true,
@@ -159,7 +165,23 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
   const animatedDbConnections = useAnimatedCounter(queryResult?.activeQueriesCount ?? 1, { duration: 300, decimals: 0 });
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3 relative pb-3">
+      {/* Floating 'Export to PDF' Action Button in Bottom-Right Corner of MetricsBar */}
+      {onOpenPdfPreview && (
+        <div className="absolute -bottom-3 right-4 z-20">
+          <button
+            type="button"
+            id="btn-floating-export-pdf"
+            data-testid="btn-floating-export-pdf"
+            onClick={onOpenPdfPreview}
+            className="px-3.5 py-2 bg-gradient-to-r from-indigo-600 via-purple-600 to-indigo-600 hover:from-indigo-500 hover:to-purple-500 text-white font-bold rounded-xl text-xs shadow-xl flex items-center gap-1.5 transition-all cursor-pointer border border-indigo-400/40 hover:scale-105 active:scale-95 shadow-indigo-950/60"
+            title="Export Diagnostic Correlation Report to PDF"
+          >
+            <FileText className="w-3.5 h-3.5 text-indigo-200" />
+            <span>Export to PDF</span>
+          </button>
+        </div>
+      )}
       {/* Performance Budget Exceeded Warning Banner */}
       {isBudgetExceeded && (
         <div
@@ -265,6 +287,46 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
           )}
         </div>
       )}
+
+      {/* Quick Metrics & Bottleneck Navigation Bar */}
+      <div className="flex items-center justify-between bg-zinc-900 text-white px-3.5 py-2 rounded-xl border border-zinc-800 shadow-xs flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <Database className="w-4 h-4 text-indigo-400 shrink-0" />
+          <span className="font-semibold text-xs tracking-wide">Live Diagnostics &amp; Metrics</span>
+          <span className="text-zinc-600 text-xs hidden sm:inline">•</span>
+          <span className="text-[11px] text-zinc-400 hidden sm:inline">Telemetry monitoring real-time lock contention &amp; query latency</span>
+        </div>
+        {onOpenBottleneckHeatmap || onOpenVisualQueryBuilder ? (
+          <div className="flex items-center gap-2">
+            {onOpenVisualQueryBuilder && (
+              <button
+                type="button"
+                id="btn-open-visual-query-builder"
+                data-testid="btn-open-visual-query-builder"
+                onClick={onOpenVisualQueryBuilder}
+                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg text-xs shadow-sm flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
+                title="Open Visual SQL Query Builder & Optimizer"
+              >
+                <Wrench className="w-3.5 h-3.5 text-indigo-200" />
+                <span>Visual SQL Builder</span>
+              </button>
+            )}
+            {onOpenBottleneckHeatmap && (
+              <button
+                type="button"
+                id="btn-open-bottleneck-heatmap-bar"
+                data-testid="btn-open-bottleneck-heatmap-bar"
+                onClick={onOpenBottleneckHeatmap}
+                className="px-3 py-1.5 bg-gradient-to-r from-rose-600 via-amber-600 to-rose-600 hover:from-rose-500 hover:via-amber-500 hover:to-rose-500 text-white font-bold rounded-lg text-xs shadow-sm flex items-center gap-1.5 transition-all cursor-pointer hover:shadow-rose-900/40 active:scale-95"
+                title="Open Database Bottleneck Heatmap Drawer"
+              >
+                <Flame className="w-3.5 h-3.5 text-amber-200 animate-pulse" />
+                <span>Database Bottleneck Heatmap</span>
+              </button>
+            )}
+          </div>
+        ) : null}
+      </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
       {/* 1. Query Execution Latency */}
@@ -667,6 +729,26 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
             <option value={500}>500ms (Enterprise)</option>
           </select>
         </div>
+
+        {onOpenBottleneckHeatmap && (
+          <div className="pt-1.5 mt-1.5 border-t border-zinc-100 flex items-center justify-between">
+            <span className="text-[11px] text-zinc-600 font-medium flex items-center gap-1">
+              <Flame className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+              <span>Contention</span>
+            </span>
+            <button
+              type="button"
+              id="btn-open-bottleneck-heatmap"
+              data-testid="btn-open-bottleneck-heatmap"
+              onClick={onOpenBottleneckHeatmap}
+              className="px-2 py-0.5 bg-gradient-to-r from-rose-600 to-amber-600 hover:from-rose-500 hover:to-amber-500 text-white rounded text-[10px] font-bold shadow-xs transition-all cursor-pointer flex items-center gap-1 active:scale-95"
+              title="Open Database Bottleneck Heatmap Drawer"
+            >
+              <Flame className="w-3 h-3 text-amber-200" />
+              <span>Bottleneck Heatmap</span>
+            </button>
+          </div>
+        )}
 
         <div
           className={`absolute bottom-0 left-0 right-0 h-1 transition-all duration-500 ease-out ${

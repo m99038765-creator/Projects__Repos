@@ -356,3 +356,19 @@ export const DEFAULT_LOW_USAGE_THRESHOLDS: LowUsageThresholdsConfig = {
   minReadWriteRatio: 3.0,
   enabled: true
 };
+
+export interface ExtendedAlertThresholdsConfig {
+  latencyAlertMs: number;
+  lockWaitAlertMs: number;
+  pageFaultsAlertCount: number;
+  anomalyTrendWindowSec: number;
+  enabled: boolean;
+}
+
+export const DEFAULT_EXTENDED_ALERT_THRESHOLDS: ExtendedAlertThresholdsConfig = {
+  latencyAlertMs: 100,
+  lockWaitAlertMs: 25,
+  pageFaultsAlertCount: 15,
+  anomalyTrendWindowSec: 15,
+  enabled: true
+};

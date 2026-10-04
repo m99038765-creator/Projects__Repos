@@ -366,7 +366,8 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
   activeHeatmapLayersProp,
   onHeatmapLayersChange,
   isLoading = false,
-  onSimulateHeavyFetch
+  onSimulateHeavyFetch,
+  executionTimeMs = 0
 }) => {
   const safeFlags: OptimizationFlags = {
     batchEagerLoading: true,
@@ -375,6 +376,64 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
     virtualizedDOM: virtualizedEnabled !== undefined ? virtualizedEnabled : true,
     deferredRendering: true,
     ...(flags || {})
+  };
+
+  // Helper to map query executionTimeMs directly to color-coded visual pulse indicators
+  const getExecutionLatencyPulse = (latencyMs: number) => {
+    if (latencyMs > 200) {
+      return {
+        tier: 'critical',
+        label: 'Critical Latency (>200ms)',
+        barBg: 'bg-rose-500',
+        dotBg: 'bg-rose-500',
+        pingBg: 'bg-rose-400',
+        pulseAnimation: 'animate-ping',
+        borderLeftClass: 'border-l-4 border-l-rose-500',
+        glowShadow: 'shadow-[0_0_8px_rgba(244,63,94,0.8)]',
+        textColor: 'text-rose-600',
+        badgeBg: 'bg-rose-100 text-rose-800 border-rose-300'
+      };
+    }
+    if (latencyMs > 130) {
+      return {
+        tier: 'high',
+        label: 'High Latency (>130ms)',
+        barBg: 'bg-amber-500',
+        dotBg: 'bg-amber-500',
+        pingBg: 'bg-amber-400',
+        pulseAnimation: 'animate-pulse',
+        borderLeftClass: 'border-l-4 border-l-amber-500',
+        glowShadow: 'shadow-[0_0_6px_rgba(245,158,11,0.7)]',
+        textColor: 'text-amber-600',
+        badgeBg: 'bg-amber-100 text-amber-800 border-amber-300'
+      };
+    }
+    if (latencyMs > 50) {
+      return {
+        tier: 'moderate',
+        label: 'Moderate Latency (50-130ms)',
+        barBg: 'bg-yellow-400',
+        dotBg: 'bg-yellow-500',
+        pingBg: 'bg-yellow-300',
+        pulseAnimation: 'animate-pulse',
+        borderLeftClass: 'border-l-4 border-l-yellow-400',
+        glowShadow: 'shadow-[0_0_4px_rgba(234,179,8,0.6)]',
+        textColor: 'text-yellow-700',
+        badgeBg: 'bg-yellow-50 text-yellow-800 border-yellow-200'
+      };
+    }
+    return {
+      tier: 'optimal',
+      label: 'Optimal Latency (<50ms)',
+      barBg: 'bg-emerald-500',
+      dotBg: 'bg-emerald-500',
+      pingBg: 'bg-emerald-400',
+      pulseAnimation: 'animate-pulse',
+      borderLeftClass: 'border-l-4 border-l-emerald-500',
+      glowShadow: 'shadow-[0_0_4px_rgba(16,185,129,0.5)]',
+      textColor: 'text-emerald-600',
+      badgeBg: 'bg-emerald-50 text-emerald-800 border-emerald-200'
+    };
   };
 
   // Ghost Rows & Heavy Loading State
@@ -441,6 +500,86 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
   };
 
   const ROW_HEIGHT = isCompactView ? 38 : 56;
+
+  // Drag-to-resize column widths state & handlers
+  const DEFAULT_TABLE_COLUMN_WIDTHS = useMemo(() => ({
+    select: 80,
+    orderId: 210,
+    customer: 280,
+    category: 180,
+    status: 120,
+    amount: 160,
+    items: 120,
+  }), []);
+
+  const [columnWidths, setColumnWidths] = useState<{
+    select: number;
+    orderId: number;
+    customer: number;
+    category: number;
+    status: number;
+    amount: number;
+    items: number;
+  }>(() => {
+    try {
+      const saved = localStorage.getItem('virtualized_table_column_widths');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return {
+      select: 80,
+      orderId: 210,
+      customer: 280,
+      category: 180,
+      status: 120,
+      amount: 160,
+      items: 120,
+    };
+  });
+
+  const resizingColRef = useRef<{ col: string; startX: number; startW: number } | null>(null);
+  const [resizingActiveCol, setResizingActiveCol] = useState<string | null>(null);
+
+  const handleStartResize = (col: 'select' | 'orderId' | 'customer' | 'category' | 'status' | 'amount', e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    resizingColRef.current = { col, startX: e.clientX, startW: columnWidths[col] };
+    setResizingActiveCol(col);
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      if (!resizingColRef.current) return;
+      const { col: activeCol, startX, startW } = resizingColRef.current;
+      const delta = moveEvent.clientX - startX;
+      const minW = activeCol === 'select' ? 60 : 90;
+      const maxW = 800;
+      const newW = Math.max(minW, Math.min(maxW, startW + delta));
+      setColumnWidths((prev) => {
+        const updated = { ...prev, [activeCol]: newW };
+        try {
+          localStorage.setItem('virtualized_table_column_widths', JSON.stringify(updated));
+        } catch {}
+        return updated;
+      });
+    };
+
+    const onMouseUp = () => {
+      resizingColRef.current = null;
+      setResizingActiveCol(null);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  };
+
+  const handleResetColumnWidths = () => {
+    setColumnWidths(DEFAULT_TABLE_COLUMN_WIDTHS);
+    try {
+      localStorage.removeItem('virtualized_table_column_widths');
+    } catch {}
+  };
+
+  const tableGridTemplate = `${columnWidths.select}px ${columnWidths.orderId}px ${columnWidths.customer}px ${columnWidths.category}px ${columnWidths.status}px ${columnWidths.amount}px minmax(${columnWidths.items}px, 1fr)`;
 
   // Selection & Batch Operations State
   const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set());
@@ -1816,26 +1955,27 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
           key={`ghost-row-${idx}`}
           id={`ghost-row-${idx}`}
           data-testid={`ghost-row-${idx}`}
-          className={`grid grid-cols-12 px-4 ${isCompactView ? 'py-2' : 'py-3.5'} items-center text-xs border-b border-zinc-100 bg-zinc-50/50 transition-opacity select-none`}
+          className={`grid min-w-full px-4 ${isCompactView ? 'py-2' : 'py-3.5'} items-center text-xs border-b border-zinc-100 bg-zinc-50/50 transition-opacity select-none`}
           style={{
             minHeight: `${ROW_HEIGHT}px`,
-            opacity: opacityVal
+            opacity: opacityVal,
+            gridTemplateColumns: tableGridTemplate,
           }}
         >
           {/* Col 1: Checkbox & Index Skeleton */}
-          <div className="col-span-1 flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 min-w-0 pr-2">
             <div className="w-4 h-4 rounded bg-zinc-200/90 animate-pulse shrink-0" />
             <div className="w-3.5 h-3 bg-zinc-200/60 rounded animate-pulse" />
           </div>
 
           {/* Col 2: Order ID & Timestamp Skeleton */}
-          <div className="col-span-2 space-y-1.5 pr-2">
+          <div className="space-y-1.5 pr-2 min-w-0">
             <div className="h-3.5 bg-gradient-to-r from-zinc-200 via-zinc-300/80 to-zinc-200 rounded w-24 animate-pulse" />
             <div className="h-2.5 bg-zinc-200/60 rounded w-16 animate-pulse" />
           </div>
 
           {/* Col 3: Customer & Account Skeleton */}
-          <div className="col-span-3 space-y-1.5 pr-3">
+          <div className="space-y-1.5 pr-3 min-w-0">
             <div className="flex items-center gap-1.5">
               <div className="w-3.5 h-3.5 rounded-full bg-zinc-200/80 shrink-0 animate-pulse" />
               <div className="h-3.5 bg-gradient-to-r from-zinc-200 via-zinc-300/80 to-zinc-200 rounded w-36 animate-pulse" />
@@ -1844,23 +1984,23 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
           </div>
 
           {/* Col 4: Category Skeleton */}
-          <div className="col-span-2 pr-2">
+          <div className="pr-2 min-w-0">
             <div className="h-3.5 bg-zinc-200/80 rounded w-28 animate-pulse" />
           </div>
 
           {/* Col 5: Status Pill Skeleton */}
-          <div className="col-span-1">
+          <div className="min-w-0">
             <div className="h-5 bg-gradient-to-r from-zinc-200 via-zinc-300/70 to-zinc-200 rounded-full w-20 animate-pulse" />
           </div>
 
           {/* Col 6: Amount Skeleton */}
-          <div className="col-span-2 text-right space-y-1 flex flex-col items-end pr-2">
+          <div className="text-right space-y-1 flex flex-col items-end pr-2 min-w-0">
             <div className="h-3.5 bg-gradient-to-r from-zinc-200 via-zinc-300/80 to-zinc-200 rounded w-20 animate-pulse" />
             <div className="h-2.5 bg-zinc-200/50 rounded w-12 animate-pulse" />
           </div>
 
           {/* Col 7: Items Skeleton */}
-          <div className="col-span-1 text-center flex flex-col items-center justify-center gap-1">
+          <div className="text-center flex flex-col items-center justify-center gap-1 min-w-0">
             <div className="h-4 bg-zinc-200/80 rounded-full w-14 animate-pulse" />
             <div className="h-2.5 bg-zinc-200/50 rounded w-10 animate-pulse" />
           </div>
@@ -2196,6 +2336,19 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
               </span>
             </label>
           </div>
+
+          {/* Reset Column Widths Button */}
+          <button
+            type="button"
+            id="btn-reset-column-widths"
+            data-testid="btn-reset-column-widths"
+            onClick={handleResetColumnWidths}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium cursor-pointer transition-all border shadow-2xs select-none bg-white hover:bg-zinc-50 border-zinc-300 text-zinc-700"
+            title="Reset table column widths to default proportions"
+          >
+            <RotateCcw className="w-3.5 h-3.5 text-zinc-500" />
+            <span>Reset Columns</span>
+          </button>
 
           {/* DOM Render Perf Overlay Toggle Button */}
           <div className="flex items-center gap-1 text-xs">
@@ -3484,13 +3637,17 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
         </div>
       )}
 
-      {/* Table Header */}
+      {/* Table Scrollable Layout with Drag-to-Resize Columns */}
+      <div className="overflow-x-auto w-full relative">
+        {/* Table Header with Drag-to-Resize Columns */}
       <div
         id="table-column-header"
         data-testid="table-column-header"
-        className={`grid grid-cols-12 px-4 ${isCompactView ? 'py-1.5' : 'py-3'} bg-zinc-100/80 border-b border-zinc-200 text-xs font-semibold text-zinc-600 select-none items-center`}
+        className={`grid min-w-full px-4 ${isCompactView ? 'py-1.5' : 'py-3'} bg-zinc-100/90 border-b border-zinc-200 text-xs font-semibold text-zinc-600 select-none items-center sticky top-0 z-10`}
+        style={{ gridTemplateColumns: tableGridTemplate }}
       >
-        <div className="col-span-1 flex items-center gap-1.5">
+        {/* Col 1: Select / Index */}
+        <div className="flex items-center gap-1.5 relative pr-3 min-w-0">
           <label
             htmlFor="checkbox-select-all"
             className="flex items-center gap-1.5 cursor-pointer select-none group"
@@ -3511,6 +3668,21 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
               className="w-4 h-4 rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500/30 cursor-pointer accent-emerald-600 shrink-0"
             />
             <span className="font-semibold text-zinc-700 group-hover:text-zinc-900">#</span>
+            <div
+              id="table-header-latency-pulse-indicator"
+              data-testid="table-header-latency-pulse-indicator"
+              className="relative flex items-center justify-center w-2.5 h-2.5 shrink-0 ml-0.5 cursor-help"
+              title={`Query Execution Latency: ${executionTimeMs.toFixed(1)}ms (${getExecutionLatencyPulse(executionTimeMs).label})`}
+            >
+              <span
+                className={`absolute inline-flex h-full w-full rounded-full opacity-75 ${getExecutionLatencyPulse(executionTimeMs).pingBg} ${
+                  getExecutionLatencyPulse(executionTimeMs).tier === 'critical' ? 'animate-ping' : 'animate-pulse'
+                }`}
+              />
+              <span
+                className={`relative inline-flex rounded-full h-1.5 w-1.5 ${getExecutionLatencyPulse(executionTimeMs).dotBg}`}
+              />
+            </div>
           </label>
           {selectedVisibleCount > 0 && (
             <span
@@ -3521,9 +3693,21 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
               {selectedVisibleCount}
             </span>
           )}
+          {/* Resize Handle for Select column */}
+          <div
+            onMouseDown={(e) => handleStartResize('select', e)}
+            onDoubleClick={() => setColumnWidths((prev) => ({ ...prev, select: DEFAULT_TABLE_COLUMN_WIDTHS.select }))}
+            className={`absolute right-0 top-0 bottom-0 w-2.5 cursor-col-resize hover:bg-indigo-500/60 active:bg-indigo-600 transition-colors z-20 flex items-center justify-center group/resizer ${resizingActiveCol === 'select' ? 'bg-indigo-500/80' : ''}`}
+            title="Drag to resize column (Double-click to reset)"
+            data-testid="resizer-select"
+          >
+            <div className="w-[1.5px] h-3.5 bg-zinc-300 group-hover/resizer:bg-indigo-400 group-active/resizer:bg-white rounded-full" />
+          </div>
         </div>
-        <div className="col-span-2 flex items-center justify-between gap-1 flex-wrap">
-          <div className="flex items-center gap-1.5 flex-wrap">
+
+        {/* Col 2: Order ID */}
+        <div className="flex items-center justify-between gap-1 flex-wrap relative pr-3 min-w-0">
+          <div className="flex items-center gap-1.5 flex-wrap truncate">
             <span>Order ID</span>
             <span
               className="text-[9px] font-mono text-indigo-700 bg-indigo-50 border border-indigo-200/80 px-1.5 py-0.2 rounded font-normal hidden sm:inline-flex items-center gap-0.5 select-none"
@@ -3542,7 +3726,7 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
               </span>
             )}
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1 shrink-0">
             <span
               id="header-scan-density-order-id"
               data-testid="header-scan-density-order-id"
@@ -3560,10 +3744,22 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
               2.1ms (14%)
             </span>
           </div>
+          {/* Resize Handle for Order ID column */}
+          <div
+            onMouseDown={(e) => handleStartResize('orderId', e)}
+            onDoubleClick={() => setColumnWidths((prev) => ({ ...prev, orderId: DEFAULT_TABLE_COLUMN_WIDTHS.orderId }))}
+            className={`absolute right-0 top-0 bottom-0 w-2.5 cursor-col-resize hover:bg-indigo-500/60 active:bg-indigo-600 transition-colors z-20 flex items-center justify-center group/resizer ${resizingActiveCol === 'orderId' ? 'bg-indigo-500/80' : ''}`}
+            title="Drag to resize column (Double-click to reset)"
+            data-testid="resizer-orderId"
+          >
+            <div className="w-[1.5px] h-3.5 bg-zinc-300 group-hover/resizer:bg-indigo-400 group-active/resizer:bg-white rounded-full" />
+          </div>
         </div>
-        <div className="col-span-3 flex items-center justify-between gap-1">
-          <span>Customer &amp; Account</span>
-          <div className="flex items-center gap-1">
+
+        {/* Col 3: Customer & Account */}
+        <div className="flex items-center justify-between gap-1 relative pr-3 min-w-0">
+          <span className="truncate">Customer &amp; Account</span>
+          <div className="flex items-center gap-1 shrink-0">
             <span
               id="header-scan-density-customer"
               data-testid="header-scan-density-customer"
@@ -3581,10 +3777,22 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
               4.8ms (32%) ⚠️
             </span>
           </div>
+          {/* Resize Handle for Customer column */}
+          <div
+            onMouseDown={(e) => handleStartResize('customer', e)}
+            onDoubleClick={() => setColumnWidths((prev) => ({ ...prev, customer: DEFAULT_TABLE_COLUMN_WIDTHS.customer }))}
+            className={`absolute right-0 top-0 bottom-0 w-2.5 cursor-col-resize hover:bg-indigo-500/60 active:bg-indigo-600 transition-colors z-20 flex items-center justify-center group/resizer ${resizingActiveCol === 'customer' ? 'bg-indigo-500/80' : ''}`}
+            title="Drag to resize column (Double-click to reset)"
+            data-testid="resizer-customer"
+          >
+            <div className="w-[1.5px] h-3.5 bg-zinc-300 group-hover/resizer:bg-indigo-400 group-active/resizer:bg-white rounded-full" />
+          </div>
         </div>
-        <div className="col-span-2 flex items-center justify-between gap-1">
-          <span>Category</span>
-          <div className="flex items-center gap-1">
+
+        {/* Col 4: Category */}
+        <div className="flex items-center justify-between gap-1 relative pr-3 min-w-0">
+          <span className="truncate">Category</span>
+          <div className="flex items-center gap-1 shrink-0">
             <span
               id="header-scan-density-category"
               data-testid="header-scan-density-category"
@@ -3602,9 +3810,21 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
               1.5ms (10%)
             </span>
           </div>
+          {/* Resize Handle for Category column */}
+          <div
+            onMouseDown={(e) => handleStartResize('category', e)}
+            onDoubleClick={() => setColumnWidths((prev) => ({ ...prev, category: DEFAULT_TABLE_COLUMN_WIDTHS.category }))}
+            className={`absolute right-0 top-0 bottom-0 w-2.5 cursor-col-resize hover:bg-indigo-500/60 active:bg-indigo-600 transition-colors z-20 flex items-center justify-center group/resizer ${resizingActiveCol === 'category' ? 'bg-indigo-500/80' : ''}`}
+            title="Drag to resize column (Double-click to reset)"
+            data-testid="resizer-category"
+          >
+            <div className="w-[1.5px] h-3.5 bg-zinc-300 group-hover/resizer:bg-indigo-400 group-active/resizer:bg-white rounded-full" />
+          </div>
         </div>
-        <div className="col-span-1 flex items-center justify-between gap-1">
-          <span>Status</span>
+
+        {/* Col 5: Status */}
+        <div className="flex items-center justify-between gap-1 relative pr-3 min-w-0">
+          <span className="truncate">Status</span>
           <span
             id="header-render-cost-status"
             data-testid="header-render-cost-status"
@@ -3613,8 +3833,20 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
           >
             0.8ms (5%)
           </span>
+          {/* Resize Handle for Status column */}
+          <div
+            onMouseDown={(e) => handleStartResize('status', e)}
+            onDoubleClick={() => setColumnWidths((prev) => ({ ...prev, status: DEFAULT_TABLE_COLUMN_WIDTHS.status }))}
+            className={`absolute right-0 top-0 bottom-0 w-2.5 cursor-col-resize hover:bg-indigo-500/60 active:bg-indigo-600 transition-colors z-20 flex items-center justify-center group/resizer ${resizingActiveCol === 'status' ? 'bg-indigo-500/80' : ''}`}
+            title="Drag to resize column (Double-click to reset)"
+            data-testid="resizer-status"
+          >
+            <div className="w-[1.5px] h-3.5 bg-zinc-300 group-hover/resizer:bg-indigo-400 group-active/resizer:bg-white rounded-full" />
+          </div>
         </div>
-        <div className="col-span-2 text-right flex items-center justify-end gap-1.5">
+
+        {/* Col 6: Amount */}
+        <div className="text-right flex items-center justify-end gap-1.5 relative pr-3 min-w-0">
           <span
             id="header-render-cost-amount"
             data-testid="header-render-cost-amount"
@@ -3624,8 +3856,20 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
             3.2ms (21%)
           </span>
           <span>Amount</span>
+          {/* Resize Handle for Amount column */}
+          <div
+            onMouseDown={(e) => handleStartResize('amount', e)}
+            onDoubleClick={() => setColumnWidths((prev) => ({ ...prev, amount: DEFAULT_TABLE_COLUMN_WIDTHS.amount }))}
+            className={`absolute right-0 top-0 bottom-0 w-2.5 cursor-col-resize hover:bg-indigo-500/60 active:bg-indigo-600 transition-colors z-20 flex items-center justify-center group/resizer ${resizingActiveCol === 'amount' ? 'bg-indigo-500/80' : ''}`}
+            title="Drag to resize column (Double-click to reset)"
+            data-testid="resizer-amount"
+          >
+            <div className="w-[1.5px] h-3.5 bg-zinc-300 group-hover/resizer:bg-indigo-400 group-active/resizer:bg-white rounded-full" />
+          </div>
         </div>
-        <div className="col-span-1 text-center flex items-center justify-between gap-1">
+
+        {/* Col 7: Items */}
+        <div className="text-center flex items-center justify-between gap-1 relative min-w-0">
           <div className="flex items-center gap-1">
             <span>Items</span>
             <button
@@ -3769,13 +4013,42 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                 ? (recordItemCount * 4.0 + 10.0) 
                 : (20.0 + (recordItemCount * unoptimizedMultiplier) + indexPenalty);
 
+              const pinnedLatencyMs = executionTimeMs > 0 ? executionTimeMs : nPlusOneLatencyMs;
+              const pinnedPulse = getExecutionLatencyPulse(pinnedLatencyMs);
+
               return (
                 <div
                   key={`pinned-${rec.id}`}
                   id={`pinned-row-${rec.id}`}
-                  className="grid grid-cols-12 px-4 py-2 items-center text-xs bg-amber-50/70 hover:bg-amber-100/80 transition-colors border-b border-amber-200/40"
+                  className="grid min-w-full px-4 py-2 items-center text-xs bg-amber-50/70 hover:bg-amber-100/80 transition-colors border-b border-amber-200/40 relative group"
+                  style={{ gridTemplateColumns: tableGridTemplate }}
                 >
-                  <div className="col-span-1 flex items-center gap-1.5 text-amber-900 font-mono">
+                  {/* Left edge latency indicator strip mapping directly to executionTimeMs */}
+                  <div
+                    id={`pinned-row-latency-bar-${rec.id}`}
+                    data-testid="pinned-row-latency-bar"
+                    className={`absolute left-0 top-0 bottom-0 w-1 ${pinnedPulse.barBg} ${
+                      pinnedPulse.tier === 'critical' ? 'animate-pulse' : ''
+                    } transition-colors duration-300 z-10`}
+                    title={`Query execution time: ${pinnedLatencyMs.toFixed(1)}ms (${pinnedPulse.label})`}
+                  />
+                  <div className="flex items-center gap-1.5 text-amber-900 font-mono min-w-0 pr-2 pl-0.5">
+                    {/* Visual Indicator: Color-coded pulse dot mapped directly to executionTimeMs */}
+                    <div
+                      id={`pinned-row-latency-pulse-${rec.id}`}
+                      data-testid="pinned-row-latency-pulse"
+                      className="relative flex items-center justify-center shrink-0 w-2.5 h-2.5 cursor-help mr-0.5"
+                      title={`Query latency: ${pinnedLatencyMs.toFixed(1)}ms • ${pinnedPulse.label}`}
+                    >
+                      <span
+                        className={`absolute inline-flex h-full w-full rounded-full opacity-75 ${pinnedPulse.pingBg} ${
+                          pinnedPulse.tier === 'critical' ? 'animate-ping' : 'animate-pulse'
+                        }`}
+                      />
+                      <span
+                        className={`relative inline-flex rounded-full h-1.5 w-1.5 ${pinnedPulse.dotBg} ${pinnedPulse.glowShadow}`}
+                      />
+                    </div>
                     <button
                       type="button"
                       id={`btn-unpin-row-${rec.id}`}
@@ -3790,25 +4063,25 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                       PIN
                     </span>
                   </div>
-                  <div className="col-span-2 flex items-center gap-1.5">
-                    <span className="font-mono font-bold text-amber-950">{rec.orderNumber}</span>
-                    <span className="text-[10px] font-mono bg-amber-200 text-amber-900 px-1.5 py-0.2 rounded font-semibold">
+                  <div className="flex items-center gap-1.5 min-w-0 pr-2">
+                    <span className="font-mono font-bold text-amber-950 truncate">{rec.orderNumber}</span>
+                    <span className="text-[10px] font-mono bg-amber-200 text-amber-900 px-1.5 py-0.2 rounded font-semibold shrink-0">
                       {nPlusOneLatencyMs.toFixed(1)}ms
                     </span>
                   </div>
-                  <div className="col-span-3 text-amber-900 truncate">
+                  <div className="text-amber-900 truncate min-w-0 pr-2">
                     {rec.customerName} <span className="text-amber-700 font-mono text-[10px]">({rec.customerEmail})</span>
                   </div>
-                  <div className="col-span-2 text-amber-900 truncate">{rec.category}</div>
-                  <div className="col-span-1">
+                  <div className="text-amber-900 truncate min-w-0 pr-2">{rec.category}</div>
+                  <div className="min-w-0">
                     <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-200/90 text-amber-900 capitalize">
                       {rec.status}
                     </span>
                   </div>
-                  <div className="col-span-2 text-right font-mono font-semibold text-amber-950">
+                  <div className="text-right font-mono font-semibold text-amber-950 min-w-0 pr-2">
                     ${rec.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </div>
-                  <div className="col-span-1 text-center font-mono text-amber-900">
+                  <div className="text-center font-mono text-amber-900 min-w-0">
                     {recordItemCount} items
                   </div>
                 </div>
@@ -4031,17 +4304,32 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                   heatmapBadgeClass = 'bg-zinc-100 text-zinc-700';
                 }
 
+                const rowQueryLatencyMs = executionTimeMs > 0 ? executionTimeMs : (breakdown.effectiveLatencyMs || 0);
+                const rowLatencyPulse = getExecutionLatencyPulse(rowQueryLatencyMs);
+
                 return (
                   <React.Fragment key={rec.id}>
                     <div
                       id={`row-${rec.id}`}
                       data-selected={isSelected}
                       aria-selected={isSelected}
+                      data-latency-tier={rowLatencyPulse.tier}
+                      data-execution-time-ms={rowQueryLatencyMs}
                       onClick={() => setSelectedMetricsRecord(rec)}
-                      title="Click to inspect full execution metrics, latency breakdown, and cache vs disk status"
-                      className={`grid grid-cols-12 px-4 ${isCompactView ? 'py-1.5' : 'py-3'} items-center text-xs transition-colors cursor-pointer border-b relative group ${heatmapRowBg}`}
-                      style={heatmapRowStyle}
+                      title={`Click to inspect full execution metrics (Query Latency: ${rowQueryLatencyMs.toFixed(1)}ms • ${rowLatencyPulse.label})`}
+                      className={`grid min-w-full px-4 ${isCompactView ? 'py-1.5' : 'py-3'} items-center text-xs transition-colors cursor-pointer border-b relative group ${heatmapRowBg}`}
+                      style={{ ...heatmapRowStyle, gridTemplateColumns: tableGridTemplate }}
                     >
+                      {/* Visual Indicator: Color-coded edge pulse bar mapped directly to executionTimeMs */}
+                      <div
+                        id={`row-latency-pulse-bar-${rec.id}`}
+                        data-testid="row-latency-pulse-bar"
+                        className={`absolute left-0 top-0 bottom-0 w-1 ${rowLatencyPulse.barBg} ${
+                          rowLatencyPulse.tier === 'critical' || rowLatencyPulse.tier === 'high' ? 'animate-pulse' : ''
+                        } transition-colors duration-300 z-10`}
+                        title={`Query execution latency: ${rowQueryLatencyMs.toFixed(1)}ms (${rowLatencyPulse.label})`}
+                      />
+
                       {/* Row Hover Latency & Z-Score Anomaly Tooltip */}
                       {isAnyHeatmapLayerActive && (
                         <div className="absolute right-4 top-1/2 -translate-y-1/2 hidden group-hover:flex flex-col gap-1 px-3 py-2 bg-zinc-900/95 backdrop-blur-sm text-white rounded-lg shadow-xl text-[11px] font-mono z-30 pointer-events-none border border-zinc-700 animate-fadeIn min-w-[210px]">
@@ -4095,9 +4383,30 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                       )}
                       {/* Checkbox, Index & Expand arrow */}
                       <div
-                        className="col-span-1 flex items-center gap-1.5 text-zinc-400"
+                        className="flex items-center gap-1.5 text-zinc-400 min-w-0 pr-2 pl-0.5"
                         onClick={(e) => e.stopPropagation()}
                       >
+                        {/* Visual Indicator: Color-coded pulse dot mapped directly to executionTimeMs */}
+                        <div
+                          id={`row-latency-pulse-${rec.id}`}
+                          data-testid="row-latency-pulse"
+                          className="relative flex items-center justify-center shrink-0 w-2.5 h-2.5 cursor-help mr-0.5"
+                          title={`Query latency: ${rowQueryLatencyMs.toFixed(1)}ms • ${rowLatencyPulse.label}`}
+                        >
+                          <span
+                            className={`absolute inline-flex h-full w-full rounded-full opacity-75 ${rowLatencyPulse.pingBg} ${
+                              rowLatencyPulse.tier === 'critical'
+                                ? 'animate-ping'
+                                : rowLatencyPulse.tier === 'high'
+                                ? 'animate-pulse'
+                                : 'animate-pulse opacity-50'
+                            }`}
+                          />
+                          <span
+                            className={`relative inline-flex rounded-full h-1.5 w-1.5 ${rowLatencyPulse.dotBg} ${rowLatencyPulse.glowShadow}`}
+                          />
+                        </div>
+
                         <input
                           id={`checkbox-select-row-${rec.id}`}
                           type="checkbox"
@@ -4156,7 +4465,7 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                       </div>
 
                       {/* Order Number & Query Plan Insight */}
-                      <div className="col-span-2 relative">
+                      <div className="relative min-w-0 pr-2">
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <span
                             className={`font-mono font-medium ${
@@ -4371,7 +4680,7 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                       </div>
 
                       {/* Customer Info */}
-                      <div className="col-span-3 pr-2">
+                      <div className="pr-2 min-w-0">
                         <div className="flex items-center gap-1.5">
                           <span className="font-medium text-zinc-900 truncate">
                             {rec.customerName}
@@ -4390,16 +4699,16 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                       </div>
 
                       {/* Category */}
-                      <div className="col-span-2 text-zinc-600 truncate">
+                      <div className="text-zinc-600 truncate min-w-0 pr-2">
                         {rec.category}
                         <div className="text-[10px] text-zinc-400">{rec.region}</div>
                       </div>
 
                       {/* Status */}
-                      <div className="col-span-1">{getStatusBadge(rec.status)}</div>
+                      <div className="min-w-0 pr-2">{getStatusBadge(rec.status)}</div>
 
                       {/* Amount */}
-                      <div className="col-span-2 text-right">
+                      <div className="text-right min-w-0 pr-2">
                         <span className="font-semibold text-zinc-900">
                           ${rec.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                         </span>
@@ -4407,7 +4716,7 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                       </div>
 
                       {/* Item Count & Inline Sparkline */}
-                      <div className="col-span-1 text-center flex flex-col items-center justify-center">
+                      <div className="text-center flex flex-col items-center justify-center min-w-0">
                         <span
                           className={`inline-flex items-center justify-center px-1.5 py-0.2 rounded text-[10px] font-mono ${heatmapBadgeClass}`}
                           title={
@@ -4466,6 +4775,7 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
             </div>
           </div>
         )}
+        </div>
       </div>
 
       {/* Table Footer Telemetry & Info */}
@@ -4749,17 +5059,42 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
               <div className="p-4 bg-zinc-50 border-t border-zinc-200 flex items-center justify-between">
                 <button
                   type="button"
+                  id="btn-download-row-details"
+                  data-testid="btn-download-row-details"
                   onClick={() => {
-                    const blob = new Blob([JSON.stringify({ record: selectedMetricsRecord, breakdown, isCached, flags: safeFlags }, null, 2)], { type: 'application/json' });
-                    triggerFileDownload(blob, `row-execution-metrics-${selectedMetricsRecord.orderNumber}.json`);
+                    const rowExportData = {
+                      record: selectedMetricsRecord,
+                      executionMetrics: {
+                        totalLatencyMs: breakdown.effectiveLatencyMs,
+                        latencyBreakdown: {
+                          dataFetchMs: breakdown.dataFetchMs,
+                          rowRenderMs: breakdown.rowRenderMs,
+                          domHydrationMs: breakdown.domHydrationMs,
+                        },
+                        bufferPoolCacheHit: isCached,
+                        storageTier: isCached ? 'shared_buffers_RAM' : 'physical_disk_NVMe',
+                        lineItemsCount: breakdown.recordItemCount,
+                        flags: {
+                          batchEagerLoading: safeFlags.batchEagerLoading,
+                          btreeIndexing: safeFlags.btreeIndexing,
+                          queryCaching: safeFlags.queryCaching,
+                        },
+                        exportedAt: new Date().toISOString(),
+                      },
+                    };
+                    const blob = new Blob([JSON.stringify(rowExportData, null, 2)], { type: 'application/json' });
+                    triggerFileDownload(blob, `row-details-${selectedMetricsRecord.orderNumber}.json`);
                   }}
                   className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold cursor-pointer transition-colors shadow-xs flex items-center gap-1.5"
+                  title="Export this record's complete execution metrics and latency breakdown as JSON"
                 >
                   <Download className="w-3.5 h-3.5" />
-                  <span>Download Row JSON</span>
+                  <span>Download Row Details</span>
                 </button>
                 <button
                   type="button"
+                  id="btn-close-row-modal-footer"
+                  data-testid="btn-close-row-modal-footer"
                   onClick={() => setSelectedMetricsRecord(null)}
                   className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-white rounded-xl text-xs font-semibold cursor-pointer transition-colors"
                 >

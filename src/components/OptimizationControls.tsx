@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { OptimizationFlags, LowUsageThresholdsConfig, DEFAULT_LOW_USAGE_THRESHOLDS } from '../types';
+import React, { useState, useEffect, useMemo } from 'react';
+import { OptimizationFlags, LowUsageThresholdsConfig, DEFAULT_LOW_USAGE_THRESHOLDS, LatencyTrendPoint, ExtendedAlertThresholdsConfig, DEFAULT_EXTENDED_ALERT_THRESHOLDS } from '../types';
 import {
   Check,
   X,
@@ -26,7 +26,9 @@ import {
   TrendingUp,
   AlertCircle,
   Pause,
-  Play
+  Play,
+  Shield,
+  Lock
 } from 'lucide-react';
 import { getPlanCacheTTLSeconds, setPlanCacheTTLSeconds, clearDatabaseCache, getQueryThrottleLatencyMs, setQueryThrottleLatencyMs } from '../db/databaseEngine';
 
@@ -40,6 +42,12 @@ interface OptimizationControlsProps {
   cacheTtl?: number;
   onCacheTtlChange?: (newTtl: number) => void;
   onPurgePlanCache?: () => void;
+  alertThresholdMs?: number;
+  onAlertThresholdChange?: (val: number) => void;
+  trendHistory?: LatencyTrendPoint[];
+  onSimulateSlopeAnomaly?: () => void;
+  extendedAlertThresholds?: ExtendedAlertThresholdsConfig;
+  onExtendedAlertThresholdsChange?: (config: ExtendedAlertThresholdsConfig) => void;
 }
 
 interface ScenarioPreset {
@@ -99,7 +107,13 @@ export const OptimizationControls: React.FC<OptimizationControlsProps> = ({
   onLowUsageThresholdsChange,
   cacheTtl,
   onCacheTtlChange,
-  onPurgePlanCache
+  onPurgePlanCache,
+  alertThresholdMs,
+  onAlertThresholdChange,
+  trendHistory,
+  onSimulateSlopeAnomaly,
+  extendedAlertThresholds,
+  onExtendedAlertThresholdsChange
 }) => {
   const safeFlags = flags || {
     batchEagerLoading: true,
@@ -108,6 +122,168 @@ export const OptimizationControls: React.FC<OptimizationControlsProps> = ({
     virtualizedDOM: true,
     deferredRendering: true,
   };
+
+  // Extended Alert Thresholds Configuration State (Lock wait & Page faults)
+  const [extendedAlertConfig, setExtendedAlertConfig] = useState<ExtendedAlertThresholdsConfig>(() => {
+    if (extendedAlertThresholds) return extendedAlertThresholds;
+    try {
+      const saved = localStorage.getItem('enterprise_extended_alert_thresholds');
+      return saved ? JSON.parse(saved) : DEFAULT_EXTENDED_ALERT_THRESHOLDS;
+    } catch {
+      return DEFAULT_EXTENDED_ALERT_THRESHOLDS;
+    }
+  });
+
+  useEffect(() => {
+    if (extendedAlertThresholds) {
+      setExtendedAlertConfig(extendedAlertThresholds);
+    }
+  }, [extendedAlertThresholds]);
+
+  const updateExtendedAlertConfig = (newConfig: ExtendedAlertThresholdsConfig) => {
+    setExtendedAlertConfig(newConfig);
+    try {
+      localStorage.setItem('enterprise_extended_alert_thresholds', JSON.stringify(newConfig));
+    } catch (e) {
+      console.error(e);
+    }
+    if (onExtendedAlertThresholdsChange) {
+      onExtendedAlertThresholdsChange(newConfig);
+    }
+    window.dispatchEvent(new CustomEvent('extended-alert-thresholds-updated', { detail: newConfig }));
+  };
+
+  const handleLockWaitAlertThresholdChange = (ms: number) => {
+    const clamped = Math.max(1, Math.min(1000, Math.round(ms)));
+    updateExtendedAlertConfig({ ...extendedAlertConfig, lockWaitAlertMs: clamped });
+  };
+
+  const handlePageFaultsAlertThresholdChange = (count: number) => {
+    const clamped = Math.max(1, Math.min(500, Math.round(count)));
+    updateExtendedAlertConfig({ ...extendedAlertConfig, pageFaultsAlertCount: clamped });
+  };
+
+  const handleAnomalyTrendWindowChange = (sec: number) => {
+    const clamped = Math.max(5, Math.min(60, Math.round(sec)));
+    updateExtendedAlertConfig({ ...extendedAlertConfig, anomalyTrendWindowSec: clamped });
+  };
+
+  const handleToggleExtendedAlertsEnabled = (enabled: boolean) => {
+    updateExtendedAlertConfig({ ...extendedAlertConfig, enabled });
+  };
+
+  // Latency Spike Alert Threshold Configuration State (in ms)
+  const [latencyAlertThreshold, setLatencyAlertThreshold] = useState<number>(() => {
+    if (typeof alertThresholdMs === 'number' && alertThresholdMs >= 10) return alertThresholdMs;
+    try {
+      const saved = localStorage.getItem('enterprise_latency_alert_threshold_ms');
+      return saved ? Number(saved) : 100;
+    } catch {
+      return 100;
+    }
+  });
+
+  useEffect(() => {
+    if (typeof alertThresholdMs === 'number' && alertThresholdMs !== latencyAlertThreshold) {
+      setLatencyAlertThreshold(alertThresholdMs);
+    }
+  }, [alertThresholdMs]);
+
+  const handleLatencyAlertThresholdChange = (val: number) => {
+    const clamped = Math.max(10, Math.min(1000, Math.round(val)));
+    setLatencyAlertThreshold(clamped);
+    try {
+      localStorage.setItem('enterprise_latency_alert_threshold_ms', clamped.toString());
+    } catch (e) {
+      console.error(e);
+    }
+    if (onAlertThresholdChange) {
+      onAlertThresholdChange(clamped);
+    }
+    window.dispatchEvent(new CustomEvent('latency-alert-threshold-updated', { detail: clamped }));
+  };
+
+  // Automated Suggested Threshold: 5-minute latency trend analysis based on P95
+  const [analysisRefreshTrigger, setAnalysisRefreshTrigger] = useState<number>(0);
+  const [autoApplySuggestedThreshold, setAutoApplySuggestedThreshold] = useState<boolean>(false);
+
+  const suggestedThresholdAnalysis = useMemo(() => {
+    const now = Date.now();
+    const fiveMinutesMs = 5 * 60 * 1000;
+    const windowStart = now - fiveMinutesMs;
+
+    const allHistory = trendHistory || [];
+    // Points recorded in the last 5 minutes
+    const pointsIn5m = allHistory.filter((pt) => pt.timestamp >= windowStart);
+
+    // If there are few points in the strict 5m window, fall back to recent points or default seeds
+    const pointsToUse = pointsIn5m.length >= 2
+      ? pointsIn5m
+      : allHistory.length > 0
+      ? allHistory.slice(-20)
+      : [];
+
+    const latencies = pointsToUse
+      .map((p) => p.executionTimeMs)
+      .filter((l) => typeof l === 'number' && !isNaN(l) && l >= 0);
+
+    if (latencies.length === 0) {
+      return {
+        sampleCount: 0,
+        windowMinutes: 5,
+        p95Latency: 50,
+        avgLatency: 20,
+        minLatency: 5,
+        maxLatency: 80,
+        optimalSuggestedThreshold: 60,
+        exactP95Threshold: 50,
+        isFallback: true,
+        status: 'insufficient_data' as const,
+        description: 'Waiting for live query samples to analyze.'
+      };
+    }
+
+    // Sort ascending for percentile calculation
+    const sorted = [...latencies].sort((a, b) => a - b);
+
+    // Linear interpolation for 95th percentile
+    const p95Index = 0.95 * (sorted.length - 1);
+    const lower = Math.floor(p95Index);
+    const upper = Math.ceil(p95Index);
+    const weight = p95Index - lower;
+    const p95 = Number((sorted[lower] * (1 - weight) + sorted[upper] * weight).toFixed(2));
+
+    const sum = latencies.reduce((acc, v) => acc + v, 0);
+    const avg = Number((sum / latencies.length).toFixed(2));
+    const min = sorted[0];
+    const max = sorted[sorted.length - 1];
+
+    // Optimal suggested threshold: 95th percentile with a 15% headroom buffer (min 10ms, rounded)
+    const optimalSuggested = Math.max(10, Math.round(p95 * 1.15));
+    const exactP95 = Math.max(10, Math.round(p95));
+
+    return {
+      sampleCount: latencies.length,
+      windowMinutes: 5,
+      p95Latency: p95,
+      avgLatency: avg,
+      minLatency: min,
+      maxLatency: max,
+      optimalSuggestedThreshold: optimalSuggested,
+      exactP95Threshold: exactP95,
+      isFallback: pointsIn5m.length < 2,
+      status: 'analyzed' as const,
+      description: `Analyzed ${latencies.length} query samples over the last 5 minutes. 95th percentile latency is ${p95.toFixed(1)}ms.`
+    };
+  }, [trendHistory, analysisRefreshTrigger]);
+
+  useEffect(() => {
+    if (autoApplySuggestedThreshold && suggestedThresholdAnalysis.status === 'analyzed') {
+      if (suggestedThresholdAnalysis.optimalSuggestedThreshold !== latencyAlertThreshold) {
+        handleLatencyAlertThresholdChange(suggestedThresholdAnalysis.optimalSuggestedThreshold);
+      }
+    }
+  }, [autoApplySuggestedThreshold, suggestedThresholdAnalysis.optimalSuggestedThreshold]);
 
   // Cache TTL State (in seconds)
   const [localCacheTtl, setLocalCacheTtl] = useState<number>(() => {
@@ -1163,6 +1339,535 @@ export const OptimizationControls: React.FC<OptimizationControlsProps> = ({
                   title={`Set read/write ratio threshold to ${r.toFixed(1)}x`}
                 >
                   {r.toFixed(1)}x
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Latency Spike Alert Thresholds & Proactive Notifications Configuration Panel */}
+      <div
+        id="panel-latency-spike-alerts"
+        data-testid="panel-latency-spike-alerts"
+        className="p-4 bg-gradient-to-r from-rose-50/90 via-amber-50/60 to-rose-50/90 rounded-xl border-2 border-rose-200 shadow-sm space-y-3.5 animate-fadeIn"
+      >
+        <div className="flex items-center justify-between border-b border-rose-200 pb-2.5 flex-wrap gap-2">
+          <div className="flex items-center gap-2.5">
+            <span className="p-2 bg-rose-600 text-white rounded-xl shadow-xs">
+              <AlertTriangle className="w-4 h-4 text-amber-200" />
+            </span>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-xs font-bold text-rose-950 uppercase tracking-wider">
+                  Latency Spike Alert Thresholds &amp; Proactive Triggers
+                </h3>
+                <span className="inline-flex items-center gap-1 font-mono text-[10px] font-bold px-2 py-0.5 rounded-full border bg-rose-100 text-rose-900 border-rose-300">
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse"></span>
+                  <span>Proactive Watchdog Active</span>
+                </span>
+              </div>
+              <p className="text-[11px] text-rose-900 mt-0.5">
+                Define custom alert threshold limits for latency spikes. When query execution latency breaches this limit, the proactive notification system fires instant diagnostic alerts with one-click remediation.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span
+              id="current-latency-alert-threshold-badge"
+              data-testid="current-latency-alert-threshold-badge"
+              className="font-mono text-xs font-bold bg-rose-200 text-rose-950 px-2.5 py-1 rounded-lg border border-rose-300 shadow-2xs"
+            >
+              Spike Threshold: &gt;{latencyAlertThreshold}ms
+            </span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 pt-1">
+          {/* 1. Continuous Threshold Slider & Input */}
+          <div className="space-y-2 bg-white/95 p-3.5 rounded-xl border border-rose-200 shadow-2xs md:col-span-2">
+            <div className="flex items-center justify-between text-xs font-bold text-zinc-800">
+              <span className="flex items-center gap-1.5 text-zinc-900">
+                <Gauge className="w-3.5 h-3.5 text-rose-600" />
+                <span>Custom Latency Spike Trigger Threshold</span>
+              </span>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  id="input-latency-alert-threshold"
+                  data-testid="input-latency-alert-threshold"
+                  min="10"
+                  max="1000"
+                  step="5"
+                  value={latencyAlertThreshold}
+                  onChange={(e) => handleLatencyAlertThresholdChange(Number(e.target.value))}
+                  className="w-20 px-2 py-0.5 font-mono text-xs font-bold text-rose-950 bg-rose-50 border border-rose-300 rounded text-right focus:outline-rose-500"
+                />
+                <span className="font-mono text-xs font-bold text-rose-900">ms</span>
+              </div>
+            </div>
+            <p className="text-[10px] text-zinc-500">
+              Dragging the slider or entering a custom millisecond threshold tunes the proactive watchdog trigger. Any query running longer than this value will immediately generate a proactive alert toast with flag remediation.
+            </p>
+            <input
+              type="range"
+              id="slider-latency-alert-threshold"
+              data-testid="slider-latency-alert-threshold"
+              min="10"
+              max="500"
+              step="5"
+              value={latencyAlertThreshold}
+              onChange={(e) => handleLatencyAlertThresholdChange(Number(e.target.value))}
+              className="w-full accent-rose-600 cursor-pointer"
+            />
+            <div className="flex items-center justify-between text-[10px] text-zinc-500 font-mono">
+              <span>10ms (Ultra-Strict)</span>
+              <span>50ms (Low)</span>
+              <span>100ms (Default)</span>
+              <span>200ms (High)</span>
+              <span>500ms (Relaxed)</span>
+            </div>
+          </div>
+
+          {/* 2. Quick Preset Buttons */}
+          <div className="space-y-2 bg-white/95 p-3.5 rounded-xl border border-rose-200 shadow-2xs">
+            <div className="flex items-center justify-between text-xs font-bold text-zinc-800">
+              <span className="flex items-center gap-1.5 text-zinc-900">
+                <Zap className="w-3.5 h-3.5 text-rose-600" />
+                <span>Quick Presets</span>
+              </span>
+              <span className="font-mono text-[10px] text-zinc-400">One-click SLA</span>
+            </div>
+            <p className="text-[10px] text-zinc-500">
+              Standard SLA breach profiles for immediate proactive triggering:
+            </p>
+            <div className="grid grid-cols-2 gap-1.5 pt-1">
+              {[
+                { label: '30ms (Strict)', val: 30 },
+                { label: '50ms (Target)', val: 50 },
+                { label: '100ms (Std)', val: 100 },
+                { label: '150ms (Spike)', val: 150 },
+                { label: '200ms (High)', val: 200 },
+                { label: '300ms (Relaxed)', val: 300 }
+              ].map((preset) => (
+                <button
+                  key={preset.val}
+                  type="button"
+                  id={`btn-preset-latency-threshold-${preset.val}`}
+                  data-testid={`btn-preset-latency-threshold-${preset.val}`}
+                  onClick={() => handleLatencyAlertThresholdChange(preset.val)}
+                  className={`py-1.5 px-2 text-center font-mono text-[11px] rounded-lg border transition-all cursor-pointer ${
+                    latencyAlertThreshold === preset.val
+                      ? 'bg-rose-600 text-white border-rose-700 shadow-xs font-bold'
+                      : 'bg-zinc-50 hover:bg-rose-50/50 text-zinc-700 hover:text-rose-900 border-zinc-200'
+                  }`}
+                  title={`Set latency spike alert threshold to ${preset.val}ms`}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 3. Automated Suggested Threshold (Last 5m Latency Trends P95 Analysis) */}
+          <div
+            id="card-suggested-threshold-analysis"
+            data-testid="card-suggested-threshold-analysis"
+            className="col-span-1 md:col-span-3 bg-gradient-to-r from-zinc-900 via-rose-950/70 to-zinc-900 text-white p-4 rounded-xl border border-rose-400/40 shadow-md space-y-3"
+          >
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="flex items-center gap-2">
+                <span className="p-1.5 bg-rose-600/90 text-amber-200 rounded-lg shadow-inner">
+                  <Sparkles className="w-4 h-4 animate-pulse" />
+                </span>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                      Automated Suggested Threshold (Last 5m Trend Analysis)
+                    </h4>
+                    <span className="font-mono text-[10px] bg-rose-500/80 text-white px-2 py-0.2 rounded-full font-bold uppercase">
+                      P95 Heuristic
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-rose-200/90 mt-0.5">
+                    Analyzes the last 5 minutes of latency trends to suggest an optimal alert threshold based on the 95th percentile.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  id="btn-refresh-suggested-threshold"
+                  data-testid="btn-refresh-suggested-threshold"
+                  onClick={() => setAnalysisRefreshTrigger((k) => k + 1)}
+                  className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded text-[11px] font-medium transition-colors cursor-pointer flex items-center gap-1 border border-zinc-700"
+                  title="Re-run statistical analysis over the latest 5 minutes of query history"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  <span>Re-analyze</span>
+                </button>
+                <label className="flex items-center gap-1.5 text-[11px] text-zinc-300 cursor-pointer bg-zinc-800/80 px-2.5 py-1 rounded border border-zinc-700 select-none">
+                  <input
+                    type="checkbox"
+                    id="toggle-auto-tune-threshold"
+                    data-testid="toggle-auto-tune-threshold"
+                    checked={autoApplySuggestedThreshold}
+                    onChange={(e) => setAutoApplySuggestedThreshold(e.target.checked)}
+                    className="rounded text-rose-600 focus:ring-rose-500 w-3.5 h-3.5 cursor-pointer"
+                  />
+                  <span>Auto-Tune</span>
+                </label>
+              </div>
+            </div>
+
+            {/* Metrics Telemetry Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1">
+              <div className="bg-zinc-950/70 p-2.5 rounded-lg border border-zinc-800">
+                <span className="text-[10px] text-zinc-400 block font-mono">5m Rolling Window</span>
+                <span className="font-mono text-sm font-bold text-zinc-100 flex items-baseline gap-1 mt-0.5">
+                  <span id="stat-suggested-sample-count">{suggestedThresholdAnalysis.sampleCount}</span>
+                  <span className="text-[10px] text-zinc-400 font-normal">samples</span>
+                </span>
+              </div>
+
+              <div className="bg-zinc-950/70 p-2.5 rounded-lg border border-rose-900/50">
+                <span className="text-[10px] text-rose-300 block font-mono">95th Percentile (P95)</span>
+                <span className="font-mono text-sm font-bold text-amber-300 flex items-baseline gap-1 mt-0.5">
+                  <span id="stat-suggested-p95-value" data-testid="stat-suggested-p95-value">
+                    {suggestedThresholdAnalysis.p95Latency.toFixed(1)}
+                  </span>
+                  <span className="text-[10px] text-amber-400 font-normal">ms</span>
+                </span>
+              </div>
+
+              <div className="bg-zinc-950/70 p-2.5 rounded-lg border border-zinc-800">
+                <span className="text-[10px] text-zinc-400 block font-mono">5m Average</span>
+                <span className="font-mono text-sm font-bold text-zinc-200 flex items-baseline gap-1 mt-0.5">
+                  <span>{suggestedThresholdAnalysis.avgLatency.toFixed(1)}</span>
+                  <span className="text-[10px] text-zinc-400 font-normal">ms</span>
+                </span>
+              </div>
+
+              <div className="bg-zinc-950/70 p-2.5 rounded-lg border border-zinc-800">
+                <span className="text-[10px] text-zinc-400 block font-mono">5m Peak (Max)</span>
+                <span className="font-mono text-sm font-bold text-zinc-200 flex items-baseline gap-1 mt-0.5">
+                  <span>{suggestedThresholdAnalysis.maxLatency.toFixed(1)}</span>
+                  <span className="text-[10px] text-zinc-400 font-normal">ms</span>
+                </span>
+              </div>
+            </div>
+
+            {/* Recommendation & Apply Action */}
+            <div className="p-3 bg-rose-950/40 rounded-xl border border-rose-500/30 flex items-center justify-between flex-wrap gap-3">
+              <div className="flex items-center gap-2">
+                <Target className="w-4 h-4 text-amber-400 shrink-0" />
+                <div className="text-xs">
+                  <span className="text-zinc-300">Suggested Optimal alertThresholdMs: </span>
+                  <strong className="text-amber-300 font-mono text-sm ml-1" id="text-optimal-suggested-threshold" data-testid="text-optimal-suggested-threshold">
+                    {suggestedThresholdAnalysis.optimalSuggestedThreshold}ms
+                  </strong>
+                  <span className="text-[11px] text-zinc-400 ml-2">
+                    (Derived from P95 of {suggestedThresholdAnalysis.p95Latency.toFixed(1)}ms + 15% safety buffer)
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  id="btn-apply-suggested-threshold"
+                  data-testid="btn-apply-suggested-threshold"
+                  onClick={() => handleLatencyAlertThresholdChange(suggestedThresholdAnalysis.optimalSuggestedThreshold)}
+                  className="px-3.5 py-1.5 bg-gradient-to-r from-amber-500 to-rose-500 hover:from-amber-400 hover:to-rose-400 text-zinc-950 font-bold text-xs rounded-lg shadow-sm transition-all cursor-pointer flex items-center gap-1.5 active:scale-95"
+                  title={`Apply optimal suggested alertThresholdMs of ${suggestedThresholdAnalysis.optimalSuggestedThreshold}ms`}
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Apply Suggested ({suggestedThresholdAnalysis.optimalSuggestedThreshold}ms)</span>
+                </button>
+                <button
+                  type="button"
+                  id="btn-apply-p95-exact"
+                  data-testid="btn-apply-p95-exact"
+                  onClick={() => handleLatencyAlertThresholdChange(suggestedThresholdAnalysis.exactP95Threshold)}
+                  className="px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-mono font-medium rounded-lg border border-zinc-700 transition-colors cursor-pointer"
+                  title={`Apply exact P95 threshold of ${suggestedThresholdAnalysis.exactP95Threshold}ms`}
+                >
+                  Apply Exact P95 ({suggestedThresholdAnalysis.exactP95Threshold}ms)
+                </button>
+                {onSimulateSlopeAnomaly && (
+                  <button
+                    type="button"
+                    id="btn-simulate-slope-anomaly"
+                    data-testid="btn-simulate-slope-anomaly"
+                    onClick={onSimulateSlopeAnomaly}
+                    className="px-2.5 py-1.5 bg-rose-900/70 hover:bg-rose-800 text-rose-200 text-xs font-medium rounded-lg border border-rose-700/60 transition-colors cursor-pointer flex items-center gap-1"
+                    title="Simulate 3-point latency slope acceleration exceeding 15ms/step to test the Performance Anomaly background observer"
+                  >
+                    <TrendingUp className="w-3.5 h-3.5 text-amber-300" />
+                    <span>Test Slope Anomaly Observer</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Advanced Alert Thresholds Configuration Panel (Lock Wait Times & Page Faults) */}
+      <div
+        id="panel-extended-alert-thresholds"
+        data-testid="panel-extended-alert-thresholds"
+        className="p-4 bg-gradient-to-r from-purple-50/90 via-pink-50/50 to-purple-50/90 rounded-xl border-2 border-purple-200 shadow-sm space-y-3.5 animate-fadeIn"
+      >
+        <div className="flex items-center justify-between border-b border-purple-200 pb-2.5 flex-wrap gap-2">
+          <div className="flex items-center gap-2.5">
+            <span className="p-2 bg-purple-600 text-white rounded-xl shadow-xs">
+              <Shield className="w-4 h-4 text-purple-100" />
+            </span>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-xs font-bold text-purple-950 uppercase tracking-wider">
+                  Advanced Alert Thresholds (Lock Wait &amp; Page Faults)
+                </h3>
+                <span className={`inline-flex items-center gap-1 font-mono text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                  extendedAlertConfig.enabled
+                    ? 'bg-purple-100 text-purple-900 border-purple-300'
+                    : 'bg-zinc-100 text-zinc-600 border-zinc-200'
+                }`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${extendedAlertConfig.enabled ? 'bg-purple-500 animate-pulse' : 'bg-zinc-400'}`}></span>
+                  <span>{extendedAlertConfig.enabled ? 'Multi-Metric Watchdog Active' : 'Watchdog Suspended'}</span>
+                </span>
+              </div>
+              <p className="text-[11px] text-purple-900 mt-0.5">
+                Define specific alert thresholds for lock wait times and buffer page faults beyond base execution time latency. Breaching any of these thresholds triggers proactive anomaly alerts.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label className="flex items-center gap-1.5 font-semibold text-[11px] text-purple-950 cursor-pointer bg-white/90 hover:bg-white px-2.5 py-1 rounded-lg border border-purple-200 shadow-2xs">
+              <input
+                type="checkbox"
+                id="checkbox-extended-alerts-enabled"
+                data-testid="checkbox-extended-alerts-enabled"
+                checked={extendedAlertConfig.enabled}
+                onChange={(e) => handleToggleExtendedAlertsEnabled(e.target.checked)}
+                className="rounded text-purple-600 focus:ring-purple-500 w-3.5 h-3.5 cursor-pointer"
+              />
+              <span>Enable Multi-Metric Watchdog</span>
+            </label>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 pt-1">
+          {/* 1. Base Latency Threshold */}
+          <div className="space-y-2 bg-white/95 p-3.5 rounded-xl border border-purple-200 shadow-2xs">
+            <div className="flex items-center justify-between text-xs font-bold text-zinc-800">
+              <span className="flex items-center gap-1.5 text-zinc-900">
+                <Clock className="w-3.5 h-3.5 text-purple-600" />
+                <span>Base Latency Threshold</span>
+              </span>
+              <span className="font-mono text-purple-900 font-bold bg-purple-100 px-2 py-0.5 rounded text-[11px] border border-purple-200">
+                &gt;{extendedAlertConfig.latencyAlertMs}ms
+              </span>
+            </div>
+            <p className="text-[10px] text-zinc-500">
+              Query execution duration ceiling triggering latency spike warnings.
+            </p>
+            <input
+              type="range"
+              id="slider-alert-latency"
+              data-testid="slider-alert-latency"
+              min="20"
+              max="500"
+              step="10"
+              value={extendedAlertConfig.latencyAlertMs}
+              onChange={(e) => {
+                const val = Number(e.target.value);
+                updateExtendedAlertConfig({ ...extendedAlertConfig, latencyAlertMs: val });
+                if (onAlertThresholdChange) onAlertThresholdChange(val);
+              }}
+              className="w-full accent-purple-600 cursor-pointer"
+            />
+            <div className="flex items-center justify-between text-[10px] text-zinc-500 font-mono">
+              <span>20ms</span>
+              <span>100ms (Std)</span>
+              <span>250ms</span>
+              <span>500ms</span>
+            </div>
+            <div className="grid grid-cols-4 gap-1 pt-1.5 border-t border-zinc-100">
+              {[50, 100, 200, 300].map((val) => (
+                <button
+                  key={val}
+                  type="button"
+                  id={`btn-preset-latency-${val}`}
+                  data-testid={`btn-preset-latency-${val}`}
+                  onClick={() => {
+                    updateExtendedAlertConfig({ ...extendedAlertConfig, latencyAlertMs: val });
+                    if (onAlertThresholdChange) onAlertThresholdChange(val);
+                  }}
+                  className={`py-1 text-center font-mono font-semibold text-[10px] rounded border transition-colors cursor-pointer ${
+                    extendedAlertConfig.latencyAlertMs === val
+                      ? 'bg-purple-600 text-white border-purple-700 shadow-2xs font-bold'
+                      : 'bg-zinc-50 hover:bg-zinc-100 text-zinc-700 border-zinc-200'
+                  }`}
+                >
+                  {val}ms
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 2. Lock Wait Time Threshold */}
+          <div className="space-y-2 bg-white/95 p-3.5 rounded-xl border border-purple-200 shadow-2xs">
+            <div className="flex items-center justify-between text-xs font-bold text-zinc-800">
+              <span className="flex items-center gap-1.5 text-zinc-900">
+                <Lock className="w-3.5 h-3.5 text-purple-600" />
+                <span>Lock Wait Time Threshold</span>
+              </span>
+              <span className="font-mono text-purple-900 font-bold bg-purple-100 px-2 py-0.5 rounded text-[11px] border border-purple-200">
+                &gt;{extendedAlertConfig.lockWaitAlertMs}ms
+              </span>
+            </div>
+            <p className="text-[10px] text-zinc-500">
+              Maximum allowable table lock acquisition delay before triggering a lock contention alert.
+            </p>
+            <input
+              type="range"
+              id="slider-alert-lockwait"
+              data-testid="slider-alert-lockwait"
+              min="5"
+              max="200"
+              step="5"
+              value={extendedAlertConfig.lockWaitAlertMs}
+              onChange={(e) => handleLockWaitAlertThresholdChange(Number(e.target.value))}
+              className="w-full accent-purple-600 cursor-pointer"
+            />
+            <div className="flex items-center justify-between text-[10px] text-zinc-500 font-mono">
+              <span>5ms</span>
+              <span>25ms (Std)</span>
+              <span>100ms</span>
+              <span>200ms</span>
+            </div>
+            <div className="grid grid-cols-4 gap-1 pt-1.5 border-t border-zinc-100">
+              {[10, 25, 50, 100].map((val) => (
+                <button
+                  key={val}
+                  type="button"
+                  id={`btn-preset-lockwait-${val}`}
+                  data-testid={`btn-preset-lockwait-${val}`}
+                  onClick={() => handleLockWaitAlertThresholdChange(val)}
+                  className={`py-1 text-center font-mono font-semibold text-[10px] rounded border transition-colors cursor-pointer ${
+                    extendedAlertConfig.lockWaitAlertMs === val
+                      ? 'bg-purple-600 text-white border-purple-700 shadow-2xs font-bold'
+                      : 'bg-zinc-50 hover:bg-zinc-100 text-zinc-700 border-zinc-200'
+                  }`}
+                >
+                  {val}ms
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 3. Page Faults Count Threshold */}
+          <div className="space-y-2 bg-white/95 p-3.5 rounded-xl border border-purple-200 shadow-2xs">
+            <div className="flex items-center justify-between text-xs font-bold text-zinc-800">
+              <span className="flex items-center gap-1.5 text-zinc-900">
+                <Database className="w-3.5 h-3.5 text-purple-600" />
+                <span>Buffer Page Faults Threshold</span>
+              </span>
+              <span className="font-mono text-purple-900 font-bold bg-purple-100 px-2 py-0.5 rounded text-[11px] border border-purple-200">
+                &gt;{extendedAlertConfig.pageFaultsAlertCount} Faults
+              </span>
+            </div>
+            <p className="text-[10px] text-zinc-500">
+              Disk page miss count ceiling triggering I/O paging performance warnings.
+            </p>
+            <input
+              type="range"
+              id="slider-alert-pagefaults"
+              data-testid="slider-alert-pagefaults"
+              min="1"
+              max="100"
+              step="1"
+              value={extendedAlertConfig.pageFaultsAlertCount}
+              onChange={(e) => handlePageFaultsAlertThresholdChange(Number(e.target.value))}
+              className="w-full accent-purple-600 cursor-pointer"
+            />
+            <div className="flex items-center justify-between text-[10px] text-zinc-500 font-mono">
+              <span>1 Fault</span>
+              <span>15 (Std)</span>
+              <span>50</span>
+              <span>100 Faults</span>
+            </div>
+            <div className="grid grid-cols-4 gap-1 pt-1.5 border-t border-zinc-100">
+              {[5, 15, 30, 50].map((val) => (
+                <button
+                  key={val}
+                  type="button"
+                  id={`btn-preset-pagefaults-${val}`}
+                  data-testid={`btn-preset-pagefaults-${val}`}
+                  onClick={() => handlePageFaultsAlertThresholdChange(val)}
+                  className={`py-1 text-center font-mono font-semibold text-[10px] rounded border transition-colors cursor-pointer ${
+                    extendedAlertConfig.pageFaultsAlertCount === val
+                      ? 'bg-purple-600 text-white border-purple-700 shadow-2xs font-bold'
+                      : 'bg-zinc-50 hover:bg-zinc-100 text-zinc-700 border-zinc-200'
+                  }`}
+                >
+                  {val}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 4. Anomaly Moving Average Trend Window */}
+          <div className="space-y-2 bg-white/95 p-3.5 rounded-xl border border-purple-200 shadow-2xs md:col-span-3">
+            <div className="flex items-center justify-between text-xs font-bold text-zinc-800">
+              <span className="flex items-center gap-1.5 text-zinc-900">
+                <TrendingUp className="w-3.5 h-3.5 text-purple-600" />
+                <span>Anomaly Detector Moving Average Trend Window</span>
+              </span>
+              <span className="font-mono text-purple-900 font-bold bg-purple-100 px-2 py-0.5 rounded text-[11px] border border-purple-200">
+                {extendedAlertConfig.anomalyTrendWindowSec || 15} Seconds
+              </span>
+            </div>
+            <p className="text-[10px] text-zinc-500">
+              Timeframe window used by the background observer to calculate dynamic latency acceleration slope and trigger performance anomalies.
+            </p>
+            <input
+              type="range"
+              id="slider-anomaly-trend-window"
+              data-testid="slider-anomaly-trend-window"
+              min="5"
+              max="60"
+              step="5"
+              value={extendedAlertConfig.anomalyTrendWindowSec || 15}
+              onChange={(e) => handleAnomalyTrendWindowChange(Number(e.target.value))}
+              className="w-full accent-purple-600 cursor-pointer"
+            />
+            <div className="flex items-center justify-between text-[10px] text-zinc-500 font-mono">
+              <span>5s</span>
+              <span>15s (Std)</span>
+              <span>30s</span>
+              <span>60 Seconds</span>
+            </div>
+            <div className="grid grid-cols-4 gap-1.5 pt-1.5 border-t border-zinc-100 max-w-md">
+              {[5, 15, 30, 60].map((val) => (
+                <button
+                  key={val}
+                  type="button"
+                  id={`btn-preset-trendwindow-${val}`}
+                  data-testid={`btn-preset-trendwindow-${val}`}
+                  onClick={() => handleAnomalyTrendWindowChange(val)}
+                  className={`py-1 text-center font-mono font-semibold text-[10px] rounded border transition-colors cursor-pointer ${
+                    (extendedAlertConfig.anomalyTrendWindowSec || 15) === val
+                      ? 'bg-purple-600 text-white border-purple-700 shadow-2xs font-bold'
+                      : 'bg-zinc-50 hover:bg-zinc-100 text-zinc-700 border-zinc-200'
+                  }`}
+                >
+                  {val}s Window
                 </button>
               ))}
             </div>

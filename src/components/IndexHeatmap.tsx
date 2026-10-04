@@ -1,6 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as d3 from 'd3';
-import { Database, Activity, Flame, ShieldAlert, Sparkles, RefreshCw, Trash2, CheckCircle2, TrendingUp, Layers, Info, Filter } from 'lucide-react';
+import { Database, Activity, Flame, ShieldAlert, Sparkles, RefreshCw, Trash2, CheckCircle2, TrendingUp, Layers, Info, Filter, Cpu } from 'lucide-react';
 
 interface IndexHeatmapProps {
   tables: any[];
@@ -23,13 +23,30 @@ export interface IndexBubbleNode {
   y?: number;
 }
 
+interface AnimatedNode {
+  indexName: string;
+  currentX: number;
+  currentY: number;
+  currentR: number;
+  targetX: number;
+  targetY: number;
+  targetR: number;
+  alpha: number;
+  targetAlpha: number;
+  data: IndexBubbleNode;
+}
+
 export const IndexHeatmap: React.FC<IndexHeatmapProps> = ({
   tables,
   onDropIndex,
   onRebuildIndex,
   onSuccessNotice,
 }) => {
-  const svgRef = useRef<SVGSVGElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const animFrameRef = useRef<number | null>(null);
+  const animatedNodesRef = useRef<Map<string, AnimatedNode>>(new Map());
+
   const [selectedBubble, setSelectedBubble] = useState<IndexBubbleNode | null>(null);
   const [filterMode, setFilterMode] = useState<'all' | 'bloated' | 'optimal' | 'write_heavy'>('all');
   const [hoveredNode, setHoveredNode] = useState<IndexBubbleNode | null>(null);
@@ -88,27 +105,10 @@ export const IndexHeatmap: React.FC<IndexHeatmapProps> = ({
   const writeHeavyCount = allNodes.filter((n) => n.status === 'write_heavy').length;
   const totalStorageMb = allNodes.reduce((sum, n) => sum + n.sizeMb, 0).toFixed(1);
 
-  // Render D3 Bubble Chart with smooth transition animations for resizing and rearranging
+  // Compute D3 Pack layout and sync into animatedNodesRef
   useEffect(() => {
-    if (!svgRef.current) return;
-    const svg = d3.select(svgRef.current);
-
     const width = 850;
     const height = 480;
-
-    svg.attr('viewBox', `0 0 ${width} ${height}`);
-
-    // Ensure defs exist once
-    if (svg.select('defs').empty()) {
-      const defs = svg.append('defs');
-      const filter = defs.append('filter').attr('id', 'bubble-shadow').attr('x', '-20%').attr('y', '-20%').attr('width', '140%').attr('height', '140%');
-      filter.append('feDropShadow').attr('dx', '0').attr('dy', '3').attr('stdDeviation', '4').attr('flood-opacity', '0.15');
-    }
-
-    let g = svg.select<SVGGElement>('g.chart-group');
-    if (g.empty()) {
-      g = svg.append('g').attr('class', 'chart-group').attr('transform', 'translate(30, 30)');
-    }
 
     const root = d3.hierarchy({ children: filteredNodes } as any)
       .sum((d: any) => Math.max(d.sizeMb, 5))
@@ -119,115 +119,242 @@ export const IndexHeatmap: React.FC<IndexHeatmapProps> = ({
       .padding(8);
 
     const packedRoot = pack(root);
-    const descendants = packedRoot.descendants().slice(1); // remove root
+    const descendants = packedRoot.descendants().slice(1);
+
+    const currentMap = animatedNodesRef.current;
+    const activeKeys = new Set<string>();
+
+    descendants.forEach((d: any) => {
+      const item: IndexBubbleNode = d.data;
+      const key = item.indexName;
+      activeKeys.add(key);
+
+      const targetX = d.x + 30;
+      const targetY = d.y + 30;
+      const targetR = d.r;
+
+      if (currentMap.has(key)) {
+        const existing = currentMap.get(key)!;
+        existing.targetX = targetX;
+        existing.targetY = targetY;
+        existing.targetR = targetR;
+        existing.targetAlpha = 1;
+        existing.data = item;
+      } else {
+        currentMap.set(key, {
+          indexName: key,
+          currentX: width / 2,
+          currentY: height / 2,
+          currentR: 0,
+          targetX,
+          targetY,
+          targetR,
+          alpha: 0,
+          targetAlpha: 1,
+          data: item,
+        });
+      }
+    });
+
+    // Mark nodes not in current layout for removal
+    currentMap.forEach((node, key) => {
+      if (!activeKeys.has(key)) {
+        node.targetR = 0;
+        node.targetAlpha = 0;
+      }
+    });
+  }, [filteredNodes]);
+
+  // Canvas 60FPS Render Loop
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const width = 850;
+    const height = 480;
+    const dpr = window.devicePixelRatio || 1;
+
+    canvas.width = width * dpr;
+    canvas.height = height * dpr;
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
 
     const minRead = d3.min(allNodes, (d) => d.readCount) || 100;
     const maxRead = d3.max(allNodes, (d) => d.readCount) || 10000;
-
     const colorScale = d3.scaleSequential()
       .domain([minRead, maxRead])
       .interpolator(d3.interpolateYlOrRd);
 
-    // Data join with indexName key function for smooth object constancy and transitions
-    const nodeGroups = g.selectAll<SVGGElement, any>('.bubble-node')
-      .data(descendants, (d: any) => d.data.indexName);
+    let animationRunning = true;
 
-    // EXIT transition: smoothly shrink and fade out removed/filtered-out bubbles
-    nodeGroups.exit()
-      .transition()
-      .duration(500)
-      .ease(d3.easeCubicIn)
-      .attr('transform', (d: any) => `translate(${width / 2}, ${height / 2})`)
-      .style('opacity', 0)
-      .remove();
+    const render = () => {
+      if (!animationRunning) return;
 
-    // ENTER new nodes
-    const enterGroup = nodeGroups.enter()
-      .append('g')
-      .attr('class', 'bubble-node')
-      .attr('transform', (d: any) => `translate(${width / 2}, ${height / 2})`)
-      .style('cursor', 'pointer')
-      .style('opacity', 0)
-      .on('click', (event, d: any) => {
-        setSelectedBubble(d.data);
-      })
-      .on('mouseenter', (event, d: any) => {
-        setHoveredNode(d.data);
-        const [mx, my] = d3.pointer(event, svgRef.current);
-        setTooltipPos({ x: mx + 15, y: my - 15 });
-        d3.select(event.currentTarget).select('circle')
-          .transition().duration(200)
-          .attr('stroke', '#2563eb')
-          .attr('stroke-width', 3.5)
-          .attr('transform', 'scale(1.05)');
-      })
-      .on('mouseleave', (event, d: any) => {
-        setHoveredNode(null);
-        setTooltipPos(null);
-        d3.select(event.currentTarget).select('circle')
-          .transition().duration(200)
-          .attr('stroke', (nodeData: any) => nodeData.data.status === 'over_sized_under_utilized' ? '#e11d48' : '#cbd5e1')
-          .attr('stroke-width', (nodeData: any) => nodeData.data.status === 'over_sized_under_utilized' ? 2.5 : 1.5)
-          .attr('transform', 'scale(1)');
+      ctx.save();
+      ctx.scale(dpr, dpr);
+      ctx.clearRect(0, 0, width, height);
+
+      const map = animatedNodesRef.current;
+      const keysToDelete: string[] = [];
+
+      map.forEach((node, key) => {
+        // Smooth lerp (60 FPS transition interpolation)
+        node.currentX += (node.targetX - node.currentX) * 0.14;
+        node.currentY += (node.targetY - node.currentY) * 0.14;
+        node.currentR += (node.targetR - node.currentR) * 0.14;
+        node.alpha += (node.targetAlpha - node.alpha) * 0.14;
+
+        if (node.targetAlpha === 0 && node.currentR < 0.5) {
+          keysToDelete.push(key);
+          return;
+        }
+
+        if (node.currentR <= 0.5 || node.alpha <= 0.01) return;
+
+        const isHovered = hoveredNode?.indexName === node.indexName;
+        const isSelected = selectedBubble?.indexName === node.indexName;
+        const isBloated = node.data.status === 'over_sized_under_utilized';
+
+        const displayR = isHovered ? node.currentR * 1.06 : node.currentR;
+
+        ctx.save();
+        ctx.globalAlpha = Math.min(Math.max(node.alpha, 0), 1);
+
+        // Shadow for depth
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.25)';
+        ctx.shadowBlur = isHovered ? 12 : 6;
+        ctx.shadowOffsetY = isHovered ? 4 : 2;
+
+        // Base Circle
+        ctx.beginPath();
+        ctx.arc(node.currentX, node.currentY, displayR, 0, Math.PI * 2);
+
+        if (isBloated) {
+          ctx.fillStyle = '#ffe4e6'; // Soft rose for bloated
+        } else {
+          ctx.fillStyle = colorScale(node.data.readCount);
+        }
+        ctx.fill();
+
+        // Stroke Border
+        ctx.shadowColor = 'transparent';
+        ctx.lineWidth = isSelected ? 3.5 : isHovered ? 3 : isBloated ? 2.5 : 1.2;
+        ctx.strokeStyle = isSelected ? '#3b82f6' : isHovered ? '#2563eb' : isBloated ? '#e11d48' : '#94a3b8';
+        ctx.stroke();
+
+        // Inner dashed ring for bloated under-utilized indexes
+        if (isBloated && displayR > 18) {
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(node.currentX, node.currentY, Math.max(displayR - 5, 4), 0, Math.PI * 2);
+          ctx.setLineDash([3, 3]);
+          ctx.strokeStyle = '#f43f5e';
+          ctx.lineWidth = 1.4;
+          ctx.stroke();
+          ctx.restore();
+        }
+
+        // Text Labels (Title & Size/Reads)
+        if (displayR > 20) {
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+
+          // Index Name
+          const fontSize = Math.min(displayR / 3.4, 11);
+          ctx.font = `700 ${fontSize}px sans-serif`;
+          ctx.fillStyle = isBloated ? '#9f1239' : '#0f172a';
+
+          let textY = node.currentY;
+          if (displayR > 28) {
+            textY -= 7;
+          }
+
+          // Clip text if it exceeds bubble width
+          const maxTextWidth = displayR * 1.7;
+          let label = node.data.indexName;
+          if (ctx.measureText(label).width > maxTextWidth) {
+            while (label.length > 3 && ctx.measureText(label + '…').width > maxTextWidth) {
+              label = label.slice(0, -1);
+            }
+            label += '…';
+          }
+          ctx.fillText(label, node.currentX, textY);
+
+          // Subtitle stats (Storage MB and Reads)
+          if (displayR > 28) {
+            ctx.font = '500 8.5px ui-monospace, monospace';
+            ctx.fillStyle = isBloated ? '#be123c' : '#334155';
+            ctx.fillText(
+              `${node.data.sizeMb}MB • ${node.data.readCount > 999 ? (node.data.readCount / 1000).toFixed(1) + 'k' : node.data.readCount}r`,
+              node.currentX,
+              node.currentY + 8
+            );
+          }
+        }
+
+        ctx.restore();
       });
 
-    enterGroup.append('circle')
-      .attr('r', 0)
-      .attr('fill', (d: any) => d.data.status === 'over_sized_under_utilized' ? '#ffe4e6' : colorScale(d.data.readCount))
-      .attr('fill-opacity', (d: any) => d.data.status === 'over_sized_under_utilized' ? 0.95 : 0.88)
-      .attr('stroke', (d: any) => d.data.status === 'over_sized_under_utilized' ? '#e11d48' : '#94a3b8')
-      .attr('stroke-width', (d: any) => d.data.status === 'over_sized_under_utilized' ? 2.5 : 1.2)
-      .attr('filter', 'url(#bubble-shadow)');
+      keysToDelete.forEach((k) => map.delete(k));
 
-    enterGroup.append('text')
-      .attr('class', 'bubble-title')
-      .attr('text-anchor', 'middle')
-      .attr('dy', '-0.3em')
-      .attr('opacity', 0);
+      ctx.restore();
+      animFrameRef.current = requestAnimationFrame(render);
+    };
 
-    enterGroup.append('text')
-      .attr('class', 'bubble-subtitle')
-      .attr('text-anchor', 'middle')
-      .attr('dy', '1.2em')
-      .attr('opacity', 0);
+    animFrameRef.current = requestAnimationFrame(render);
 
-    // MERGE enter + update: smooth D3 transition for position, radius scaling, and color updates
-    const mergedGroups = enterGroup.merge(nodeGroups);
+    return () => {
+      animationRunning = false;
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    };
+  }, [allNodes, hoveredNode, selectedBubble]);
 
-    mergedGroups.transition()
-      .duration(750)
-      .ease(d3.easeCubicOut)
-      .attr('transform', (d: any) => `translate(${d.x}, ${d.y})`)
-      .style('opacity', 1);
+  // Canvas Mouse Event Handlers
+  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
 
-    mergedGroups.select('circle')
-      .transition()
-      .duration(750)
-      .ease(d3.easeCubicOut)
-      .attr('r', (d: any) => d.r)
-      .attr('fill', (d: any) => d.data.status === 'over_sized_under_utilized' ? '#ffe4e6' : colorScale(d.data.readCount))
-      .attr('stroke', (d: any) => d.data.status === 'over_sized_under_utilized' ? '#e11d48' : '#94a3b8')
-      .attr('stroke-width', (d: any) => d.data.status === 'over_sized_under_utilized' ? 2.5 : 1.2);
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = 850 / rect.width;
+    const scaleY = 480 / rect.height;
+    const mouseX = (e.clientX - rect.left) * scaleX;
+    const mouseY = (e.clientY - rect.top) * scaleY;
 
-    mergedGroups.select('text.bubble-title')
-      .text((d: any) => d.r > 22 ? d.data.indexName : '')
-      .attr('font-size', (d: any) => Math.min(d.r / 3.2, 11) + 'px')
-      .attr('font-weight', '700')
-      .attr('fill', (d: any) => d.data.status === 'over_sized_under_utilized' ? '#9f1239' : '#1e293b')
-      .transition()
-      .duration(750)
-      .attr('opacity', (d: any) => d.r > 22 ? 1 : 0);
+    let found: IndexBubbleNode | null = null;
+    const map = animatedNodesRef.current;
 
-    mergedGroups.select('text.bubble-subtitle')
-      .text((d: any) => d.r > 28 ? `${d.data.sizeMb}MB • ${d.data.readCount.toLocaleString()} reads` : '')
-      .attr('font-size', '9px')
-      .attr('font-family', 'ui-monospace, monospace')
-      .attr('fill', (d: any) => d.data.status === 'over_sized_under_utilized' ? '#be123c' : '#475569')
-      .transition()
-      .duration(750)
-      .attr('opacity', (d: any) => d.r > 28 ? 1 : 0);
+    for (const node of map.values()) {
+      if (node.currentR <= 2) continue;
+      const dx = mouseX - node.currentX;
+      const dy = mouseY - node.currentY;
+      if (Math.hypot(dx, dy) <= node.currentR) {
+        found = node.data;
+        break;
+      }
+    }
 
-  }, [filteredNodes, allNodes]);
+    if (found) {
+      setHoveredNode(found);
+      setTooltipPos({ x: e.clientX - rect.left + 15, y: e.clientY - rect.top - 15 });
+    } else {
+      setHoveredNode(null);
+      setTooltipPos(null);
+    }
+  }, []);
+
+  const handleClick = useCallback(() => {
+    if (hoveredNode) {
+      setSelectedBubble(hoveredNode);
+    }
+  }, [hoveredNode]);
+
+  const handleMouseLeave = useCallback(() => {
+    setHoveredNode(null);
+    setTooltipPos(null);
+  }, []);
 
   return (
     <div className="p-6 space-y-6 bg-white rounded-2xl border border-zinc-200 shadow-xs max-h-[82vh] overflow-y-auto">
@@ -242,9 +369,13 @@ export const IndexHeatmap: React.FC<IndexHeatmapProps> = ({
             <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-extrabold bg-indigo-500/20 text-indigo-200 border border-indigo-400/30">
               {allNodes.length} Indexes Analyzed ({totalStorageMb} MB)
             </span>
+            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 flex items-center gap-1">
+              <Cpu className="w-3 h-3 text-emerald-400" />
+              <span>60FPS Canvas Engine</span>
+            </span>
           </div>
           <p className="text-xs text-indigo-200/90 leading-relaxed max-w-2xl">
-            Interactive D3 bubble chart where bubble size represents index storage cost (MB) and color intensity represents query read frequency. Bubbles smoothly resize and rearrange when indexes are pruned or updated.
+            High-performance hardware-accelerated Canvas bubble heatmap. Bubble size represents index storage cost (MB) and color intensity represents query read frequency, delivering fluid 60FPS transitions across hundreds of database indexes.
           </p>
         </div>
 
@@ -317,14 +448,23 @@ export const IndexHeatmap: React.FC<IndexHeatmapProps> = ({
         </div>
       </div>
 
-      {/* D3 Bubble Chart Container */}
-      <div className="relative bg-zinc-950 rounded-2xl p-4 border border-zinc-800 shadow-inner flex flex-col items-center justify-center overflow-hidden">
-        <div className="absolute top-3 left-4 flex items-center gap-2 text-xs font-semibold text-zinc-400">
+      {/* Canvas Heatmap Container */}
+      <div
+        ref={containerRef}
+        className="relative bg-zinc-950 rounded-2xl p-4 border border-zinc-800 shadow-inner flex flex-col items-center justify-center overflow-hidden"
+      >
+        <div className="absolute top-3 left-4 flex items-center gap-2 text-xs font-semibold text-zinc-400 z-10 pointer-events-none">
           <Info className="w-3.5 h-3.5 text-cyan-400" />
-          <span>Bubble size = Storage Cost (MB) • Color Intensity = Read Activity Frequency</span>
+          <span>Canvas 60FPS: Bubble size = Storage Cost (MB) • Color Intensity = Read Frequency</span>
         </div>
 
-        <svg ref={svgRef} className="w-full h-auto max-h-[480px] mt-6" />
+        <canvas
+          ref={canvasRef}
+          onMouseMove={handleMouseMove}
+          onClick={handleClick}
+          onMouseLeave={handleMouseLeave}
+          className="w-full max-w-[850px] h-auto cursor-pointer mt-6"
+        />
 
         {/* Hover Tooltip Box */}
         {hoveredNode && tooltipPos && (
