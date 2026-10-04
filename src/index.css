@@ -1,0 +1,152 @@
+@import "tailwindcss";
+
+@keyframes indeterminate-progress {
+  0% {
+    transform: translateX(-100%);
+    width: 40%;
+  }
+  50% {
+    transform: translateX(100%);
+    width: 60%;
+  }
+  100% {
+    transform: translateX(250%);
+    width: 40%;
+  }
+}
+
+.animate-indeterminate {
+  animation: indeterminate-progress 1.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes sparkle-twinkle {
+  0%, 100% {
+    transform: scale(0.92) rotate(0deg);
+    opacity: 0.85;
+  }
+  50% {
+    transform: scale(1.15) rotate(12deg);
+    opacity: 1;
+  }
+}
+
+.animate-sparkle-twinkle {
+  animation: sparkle-twinkle 1.4s ease-in-out infinite;
+}
+
+@keyframes pinned-ring-shift {
+  0%, 100% {
+    box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.75), 0 1px 2px 0 rgba(245, 158, 11, 0.15);
+    border-color: #f59e0b;
+  }
+  50% {
+    box-shadow: 0 0 0 2px rgba(217, 119, 6, 0.95), 0 1px 3px 0 rgba(217, 119, 6, 0.25);
+    border-color: #d97706;
+  }
+}
+
+.animate-pinned-ring-shift {
+  animation: pinned-ring-shift 2.4s ease-in-out infinite;
+}
+
+/* Metric count CSS transition & visual feedback animations */
+@keyframes metric-pop-up {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.06); }
+  100% { transform: scale(1); }
+}
+
+@keyframes metric-pop-down {
+  0% { transform: scale(1); }
+  40% { transform: scale(0.96); }
+  100% { transform: scale(1); }
+}
+
+/* Subtle slide-up transition animation when numeric value increases or updates */
+@keyframes metric-slide-up {
+  0% {
+    opacity: 0.65;
+    transform: translateY(4px);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-1.5px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Subtle slide-down transition animation when numeric value decreases */
+@keyframes metric-slide-down {
+  0% {
+    opacity: 0.65;
+    transform: translateY(-4px);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(1.5px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Subtle pulse animation for numeric value updates */
+@keyframes metric-pulse {
+  0% {
+    transform: scale(1);
+  }
+  35% {
+    transform: scale(1.08);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* Subtle highlight glow on metric change */
+@keyframes metric-highlight-pulse {
+  0% {
+    background-color: transparent;
+  }
+  30% {
+    background-color: rgba(99, 102, 241, 0.12);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.animate-metric-up {
+  animation: metric-pop-up 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.animate-metric-down {
+  animation: metric-pop-down 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.animate-metric-slide-up {
+  animation: metric-slide-up 0.42s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-metric-slide-down {
+  animation: metric-slide-down 0.42s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-metric-pulse {
+  animation: metric-pulse 0.42s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-metric-highlight {
+  animation: metric-highlight-pulse 0.5s ease-out;
+}
+
+.metric-value-transition {
+  transition: color 300ms cubic-bezier(0.4, 0, 0.2, 1), transform 250ms cubic-bezier(0.16, 1, 0.3, 1), opacity 250ms ease-out;
+  font-variant-numeric: tabular-nums;
+  display: inline-flex;
+  align-items: baseline;
+}
