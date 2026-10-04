@@ -482,7 +482,13 @@ export default function App() {
   const [thresholdViolationsHistory] = useState<any[]>([]);
   const [mutationHistory] = useState<DatabaseMutationHistoryEntry[]>(() => getDatabaseMutationHistory());
   const [trendHistory, setTrendHistory] = useState<LatencyTrendPoint[]>(() => getInitialTrendHistory());
+  const [historyTapeFilterMode, setHistoryTapeFilterMode] = useState<'all' | 'latency-5min'>('all');
   const [isSimulatingSequence, setIsSimulatingSequence] = useState(false);
+
+  const handleViewRelatedHistory = () => {
+    setHistoryTapeFilterMode('latency-5min');
+    setIsHistoricalDataTapeOpen(true);
+  };
   const [isBatchBannerDismissed, setIsBatchBannerDismissed] = useState(false);
   const [showDismissConfirmation, setShowDismissConfirmation] = useState(false);
   const [batchBannerDismissedUntil, setBatchBannerDismissedUntil] = useState<number>(() => {
@@ -1392,11 +1398,21 @@ export default function App() {
                 <p className="text-xs text-rose-200/90 leading-relaxed max-w-3xl">
                   Query latency has reached <strong className="text-white font-mono">{queryResult.executionTimeMs.toFixed(1)}ms</strong> (exceeding the 200ms threshold) because <strong className="text-amber-300 font-mono">batchEagerLoading</strong> is currently disabled, triggering an unbatched N+1 child query cascade across line item relationships.
                 </p>
-                <div className="flex items-center gap-2 mt-2 flex-wrap">
+                <div className="flex items-center gap-3 mt-2 flex-wrap">
                   <span className="font-mono text-[11px] bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 px-2.5 py-0.5 rounded-full font-bold flex items-center gap-1 shadow-xs">
                     <span>⚡ Projected Latency Gain:</span>
                     <span className="text-white font-extrabold">-{Math.max(45, Math.round(queryResult.executionTimeMs * 0.55))} ms reduction</span>
                   </span>
+                  <button
+                    type="button"
+                    id="btn-view-related-history"
+                    data-testid="btn-view-related-history"
+                    onClick={handleViewRelatedHistory}
+                    className="text-xs font-mono font-semibold text-rose-300 hover:text-white underline underline-offset-4 cursor-pointer transition-colors flex items-center gap-1"
+                    title="View related history entries from the last 5 minutes"
+                  >
+                    <span>View related history →</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -1708,10 +1724,18 @@ export default function App() {
 
       <HistoricalDataTapeModal
         isOpen={isHistoricalDataTapeOpen}
-        onClose={() => setIsHistoricalDataTapeOpen(false)}
-        entries={dataTapeEntries}
+        onClose={() => {
+          setIsHistoricalDataTapeOpen(false);
+          setHistoryTapeFilterMode('all');
+        }}
+        entries={
+          historyTapeFilterMode === 'latency-5min'
+            ? dataTapeEntries.filter(e => e.timestamp >= Date.now() - 5 * 60 * 1000 && (e.triggerEvent.toLowerCase().includes('latency') || e.triggerEvent.toLowerCase().includes('spike') || e.triggerEvent.toLowerCase().includes('batch') || e.triggerEvent.toLowerCase().includes('slow')))
+            : dataTapeEntries
+        }
         initialEntries={dataTapeEntries}
         initialSelectedEntry={selectedTapeEntry}
+        initialSearchTerm={historyTapeFilterMode === 'latency-5min' ? 'latency' : ''}
         onClearTape={() => setDataTapeEntries([])}
       />
 

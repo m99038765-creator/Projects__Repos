@@ -39,6 +39,7 @@ interface HistoricalDataTapeModalProps {
   entries?: DataTapeEntry[];
   initialEntries?: DataTapeEntry[];
   initialSelectedEntry?: DataTapeEntry | null;
+  initialSearchTerm?: string;
   isAutoSaveEnabled?: boolean;
   onToggleAutoSave?: () => void;
   onClearTape?: () => void;
@@ -52,6 +53,7 @@ export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = (
   entries,
   initialEntries,
   initialSelectedEntry = null,
+  initialSearchTerm = '',
   isAutoSaveEnabled = true,
   onToggleAutoSave = () => {},
   onClearTape = () => {},
@@ -67,7 +69,13 @@ export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = (
       setInspectedEntry(initialSelectedEntry);
     }
   }, [initialSelectedEntry]);
-  const [searchTerm, setSearchTerm] = useState('');
+  const [searchTerm, setSearchTerm] = useState(initialSearchTerm);
+
+  useEffect(() => {
+    if (initialSearchTerm) {
+      setSearchTerm(initialSearchTerm);
+    }
+  }, [initialSearchTerm]);
   const [triggerEventFilter, setTriggerEventFilter] = useState('');
   const [isMutating, setIsMutating] = useState(false);
   const [isDiffOpen, setIsDiffOpen] = useState<boolean>(false);
