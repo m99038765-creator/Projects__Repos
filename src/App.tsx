@@ -23,7 +23,7 @@ import { VisualQueryBuilderModal } from './components/VisualQueryBuilderModal';
 import { LatencyLegend } from './components/LatencyLegend';
 import { HeatmapIntensityScale } from './components/HeatmapIntensityScale';
 import { ExportPreviewModal } from './components/ExportPreviewModal';
-import { AlertTriangle, X, Flame, Zap, BellOff, TrendingUp, FileText, Loader, Sparkles, Search, Clipboard, Pin, RotateCcw, FileSpreadsheet, Camera, FileJson, Brain, Layers } from 'lucide-react';
+import { AlertTriangle, X, Flame, Zap, BellOff, TrendingUp, FileText, Loader, Sparkles, Search, Clipboard, Pin, RotateCcw, FileSpreadsheet, Camera, FileJson, Brain, Layers, Sliders, Settings, Info } from 'lucide-react';
 import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
 import {
   exportRecords,
@@ -299,11 +299,12 @@ export default function App() {
     });
   };
 
-  const handleExportPdfClick = () => {
+  const handleExportPdfClick = async () => {
     try {
       setIsGeneratingDiagnosticPdf(true);
       setShowPdfQueueToast(true);
       setShowPdfPreviewModal(true);
+      await Promise.resolve();
       setTimeout(() => {
         setShowPdfQueueToast(false);
         setIsGeneratingDiagnosticPdf(false);
@@ -315,10 +316,11 @@ export default function App() {
     } catch (err: any) {
       setIsGeneratingDiagnosticPdf(false);
       setShowPdfQueueToast(false);
-      setPdfErrorToast('Diagnostic report generation failed. Please try again.');
+      setShowPdfPreviewModal(false);
+      setPdfErrorToast(err?.message || 'Diagnostic report generation failed. Please try again.');
       setTimeout(() => {
         setPdfErrorToast(null);
-      }, 3500);
+      }, 4000);
     }
   };
 
@@ -432,6 +434,49 @@ export default function App() {
     }
   };
 
+  const handleExportDiagnosticsCsv = () => {
+    try {
+      const headers = ['Metric / Property', 'Value'];
+      const rows: string[][] = [
+        ['Export Timestamp', new Date().toISOString()]
+      ];
+
+      if (selectedCsvMetrics.includes('latency')) {
+        rows.push(['Execution Time (ms)', queryResult.executionTimeMs.toFixed(2)]);
+      }
+      if (selectedCsvMetrics.includes('totalRecords')) {
+        rows.push(['Total Records Scanned', String(queryResult.totalCount || 0)]);
+      }
+      if (selectedCsvMetrics.includes('cacheHit')) {
+        rows.push(['Cache Hit Status', String(queryResult.cacheHit)]);
+      }
+      if (selectedCsvMetrics.includes('queryCount')) {
+        rows.push(['N+1 Cascaded Query Count', String(queryResult.activeQueries || 101)]);
+      }
+      if (selectedCsvMetrics.includes('errorStatus')) {
+        rows.push(['System Error Status', String(queryResult.simulatedError || 'None')]);
+      }
+      if (selectedCsvMetrics.includes('flags')) {
+        rows.push(['Flag: batchEagerLoading', String(flags.batchEagerLoading)]);
+        rows.push(['Flag: btreeIndexing', String(flags.btreeIndexing)]);
+        rows.push(['Flag: queryCaching', String(flags.queryCaching)]);
+        rows.push(['Flag: virtualizedDOM', String(flags.virtualizedDOM)]);
+        rows.push(['Flag: deferredRendering', String(flags.deferredRendering)]);
+      }
+
+      const csvContent = '\uFEFF' + [headers.join(','), ...rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(','))].join('\r\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      triggerFileDownload(blob, `system_diagnostics_metrics_${Date.now()}.csv`);
+      setProactiveToast({
+        title: 'Diagnostics CSV Exported',
+        message: `Exported ${rows.length - 1} configured metric fields to CSV successfully.`
+      });
+      setTimeout(() => setProactiveToast(null), 4000);
+    } catch (err) {
+      console.error('Failed to export diagnostics CSV:', err);
+    }
+  };
+
   const handleExportSerializationLogsCsv = () => {
     if (!serializationLogs || serializationLogs.length === 0) {
       setPdfErrorToast('No serialization logs available to export.');
@@ -461,6 +506,7 @@ export default function App() {
       flagToEnable: 'batchEagerLoading',
       flagName: 'Batch Eager Loading'
     });
+    setTimeout(() => setProactiveToast(null), 4000);
   };
 
   // Plan Cache TTL state (in seconds)
@@ -677,6 +723,15 @@ export default function App() {
       flagName: 'Batch Eager Loading'
     });
   };
+  const [selectedCsvMetrics, setSelectedCsvMetrics] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_diagnostic_csv_columns');
+      return saved ? JSON.parse(saved) : ['latency', 'flags', 'queryCount', 'errorStatus', 'totalRecords', 'cacheHit'];
+    } catch {
+      return ['latency', 'flags', 'queryCount', 'errorStatus', 'totalRecords', 'cacheHit'];
+    }
+  });
+  const [isCsvColumnsModalOpen, setIsCsvColumnsModalOpen] = useState(false);
   const [isBannerPinned, setIsBannerPinned] = useState<boolean>(() => {
     try {
       return localStorage.getItem('enterprise_batch_banner_pinned') === 'true';
@@ -684,6 +739,30 @@ export default function App() {
       return false;
     }
   });
+
+  const [isCompareAgainstBaselineEnabled, setIsCompareAgainstBaselineEnabled] = useState<boolean>(false);
+  const [initialBaselineLatency, setInitialBaselineLatency] = useState<number | null>(null);
+  const [sparklineMetric, setSparklineMetric] = useState<'latency' | 'mutation'>('latency');
+  const [isSparklineSettingsOpen, setIsSparklineSettingsOpen] = useState(false);
+  const sparklineSettingsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (sparklineSettingsRef.current && !sparklineSettingsRef.current.contains(e.target as Node)) {
+        setIsSparklineSettingsOpen(false);
+      }
+    }
+    if (isSparklineSettingsOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [isSparklineSettingsOpen]);
+
+  useEffect(() => {
+    if (!flags.batchEagerLoading && initialBaselineLatency === null) {
+      setInitialBaselineLatency(queryResult.executionTimeMs);
+    }
+  }, [flags.batchEagerLoading, queryResult.executionTimeMs, initialBaselineLatency]);
 
   const [customLatencyThreshold, setCustomLatencyThreshold] = useState<number>(() => {
     try {
@@ -773,6 +852,14 @@ export default function App() {
   };
   const [isBatchBannerDismissed, setIsBatchBannerDismissed] = useState(false);
   const [showDismissConfirmation, setShowDismissConfirmation] = useState(false);
+  const [dismissalDuration, setDismissalDuration] = useState<'5min' | '1hour'>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_batch_banner_dismissal_duration');
+      return saved === '1hour' ? '1hour' : '5min';
+    } catch {
+      return '5min';
+    }
+  });
   const [batchBannerDismissedUntil, setBatchBannerDismissedUntil] = useState<number>(() => {
     try {
       const saved = localStorage.getItem('enterprise_batch_banner_dismissed_until');
@@ -782,11 +869,13 @@ export default function App() {
     }
   });
 
-  const handleConfirmDismiss5Min = () => {
-    const until = Date.now() + 5 * 60 * 1000;
+  const handleConfirmDismiss = () => {
+    const durationMs = dismissalDuration === '1hour' ? 60 * 60 * 1000 : 5 * 60 * 1000;
+    const until = Date.now() + durationMs;
     setBatchBannerDismissedUntil(until);
     try {
       localStorage.setItem('enterprise_batch_banner_dismissed_until', String(until));
+      localStorage.setItem('enterprise_batch_banner_dismissal_duration', dismissalDuration);
     } catch (e) {
       console.error(e);
     }
@@ -1787,23 +1876,31 @@ export default function App() {
                   <span className="font-mono text-[10px] bg-amber-500/20 text-amber-300 border border-amber-400/30 px-2 py-0.5 rounded-full font-semibold">
                     flag: batchEagerLoading = false
                   </span>
-                  <div className="flex items-center gap-1.5 bg-rose-950/80 px-2 py-1 rounded-lg border border-rose-500/40 shrink-0" title="Recent latency trend leading up to breach">
-                    <span className="text-[9px] font-mono text-rose-300">Trend:</span>
+                  <div
+                    ref={sparklineSettingsRef}
+                    className="relative flex items-center gap-1.5 bg-rose-950/80 px-2 py-1 rounded-lg border border-rose-500/40 shrink-0"
+                    title={`Recent ${sparklineMetric === 'latency' ? 'latency' : 'mutation frequency'} trend leading up to breach`}
+                  >
+                    <span className="text-[9px] font-mono text-rose-300">
+                      {sparklineMetric === 'latency' ? 'Trend:' : 'Mutations:'}
+                    </span>
                     <svg width={50} height={18} className="overflow-visible">
                       {(() => {
                         const points = (trendHistory || []).slice(-6);
-                        const lats = points.length >= 2 ? points.map(p => p.executionTimeMs) : [120, 150, 190, 240, 280, queryResult.executionTimeMs];
-                        const min = Math.min(...lats);
-                        const max = Math.max(...lats, min + 1);
-                        const coords = lats.map((v, i) => {
-                          const x = (i / (lats.length - 1)) * 44;
+                        const values = points.length >= 2
+                          ? points.map(p => sparklineMetric === 'latency' ? p.executionTimeMs : (p.activeQueriesCount * 3.8 + 12))
+                          : [120, 150, 190, 240, 280, sparklineMetric === 'latency' ? queryResult.executionTimeMs : 55];
+                        const min = Math.min(...values);
+                        const max = Math.max(...values, min + 1);
+                        const coords = values.map((v, i) => {
+                          const x = (i / (values.length - 1)) * 44;
                           const y = 16 - ((v - min) / (max - min || 1)) * 12 - 2;
                           return `${x.toFixed(1)},${y.toFixed(1)}`;
                         }).join(' ');
                         return (
                           <polyline
                             fill="none"
-                            stroke="#f87171"
+                            stroke={sparklineMetric === 'latency' ? '#f87171' : '#fbbf24'}
                             strokeWidth="1.75"
                             strokeLinecap="round"
                             strokeLinejoin="round"
@@ -1812,6 +1909,64 @@ export default function App() {
                         );
                       })()}
                     </svg>
+
+                    <button
+                      type="button"
+                      id="btn-sparkline-metric-settings"
+                      data-testid="btn-sparkline-metric-settings"
+                      onClick={() => setIsSparklineSettingsOpen((prev) => !prev)}
+                      className="p-0.5 text-rose-300 hover:text-white hover:bg-rose-900 rounded transition-colors cursor-pointer"
+                      title="Configure sparkline metric (Latency vs Mutation Frequency)"
+                      aria-label="Sparkline settings"
+                    >
+                      <Settings className="w-3 h-3 text-rose-300 hover:text-white" />
+                    </button>
+
+                    {isSparklineSettingsOpen && (
+                      <div
+                        id="popover-sparkline-metric-settings"
+                        data-testid="popover-sparkline-metric-settings"
+                        className="absolute right-0 top-full mt-1.5 w-48 bg-zinc-900 border border-zinc-700 rounded-xl shadow-xl z-50 p-2 space-y-1 text-xs animate-fadeIn text-zinc-200"
+                      >
+                        <div className="px-2 py-1 text-[10px] font-bold text-zinc-400 uppercase tracking-wider border-b border-zinc-800">
+                          Sparkline Metric
+                        </div>
+                        <button
+                          type="button"
+                          id="btn-metric-option-latency"
+                          data-testid="btn-metric-option-latency"
+                          onClick={() => {
+                            setSparklineMetric('latency');
+                            setIsSparklineSettingsOpen(false);
+                          }}
+                          className={`w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-left transition-colors cursor-pointer ${
+                            sparklineMetric === 'latency'
+                              ? 'bg-rose-950 text-rose-200 font-bold border border-rose-600/50'
+                              : 'hover:bg-zinc-800 text-zinc-300'
+                          }`}
+                        >
+                          <span>⚡ Latency</span>
+                          {sparklineMetric === 'latency' && <span className="text-rose-400">✓</span>}
+                        </button>
+                        <button
+                          type="button"
+                          id="btn-metric-option-mutation"
+                          data-testid="btn-metric-option-mutation"
+                          onClick={() => {
+                            setSparklineMetric('mutation');
+                            setIsSparklineSettingsOpen(false);
+                          }}
+                          className={`w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-left transition-colors cursor-pointer ${
+                            sparklineMetric === 'mutation'
+                              ? 'bg-amber-950 text-amber-200 font-bold border border-amber-600/50'
+                              : 'hover:bg-zinc-800 text-zinc-300'
+                          }`}
+                        >
+                          <span>🔄 Mutation Freq</span>
+                          {sparklineMetric === 'mutation' && <span className="text-amber-400">✓</span>}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
                 <p className="text-xs text-rose-200/90 leading-relaxed max-w-3xl">
@@ -1890,22 +2045,24 @@ export default function App() {
                       View All ({pdfExportHistory.length}) →
                     </button>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex items-center gap-2 overflow-x-auto whitespace-nowrap pb-1 scrollbar-thin max-w-full">
                     {pdfExportHistory.slice(0, 5).map((item) => (
                       <button
                         key={item.id}
                         type="button"
+                        id={`btn-redownload-report-${item.id}`}
+                        data-testid={`btn-redownload-report-${item.id}`}
                         onClick={() => handleReDownloadHistoryItem(item)}
-                        className="px-2.5 py-1 bg-zinc-950/80 hover:bg-zinc-900 border border-zinc-800 hover:border-indigo-400/50 rounded-lg text-[11px] font-mono text-zinc-200 hover:text-white transition-colors cursor-pointer flex items-center gap-1.5 shadow-xs"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-zinc-950/90 hover:bg-zinc-900 border border-zinc-800 hover:border-indigo-400/60 rounded-xl text-xs font-mono text-zinc-200 hover:text-white transition-all cursor-pointer shrink-0 shadow-xs group"
                         title={`Re-download report: ${item.title} (${item.timeFormatted})`}
                       >
-                        <FileText className="w-3 h-3 text-indigo-400 shrink-0" />
-                        <span className="truncate max-w-[140px] font-bold">{item.title}</span>
-                        <span className="text-[9px] text-zinc-400 shrink-0">({item.timeFormatted})</span>
+                        <FileText className="w-3.5 h-3.5 text-indigo-400 group-hover:scale-110 transition-transform shrink-0" />
+                        <span className="font-bold truncate max-w-[160px]">{item.title}</span>
+                        <span className="text-[10px] text-zinc-400 shrink-0">({item.timeFormatted})</span>
                       </button>
                     ))}
                     {pdfExportHistory.length === 0 && (
-                      <span className="text-[11px] text-zinc-400 font-mono italic">No recent reports generated yet.</span>
+                      <span className="text-xs text-zinc-400 font-mono italic px-1">No recent reports generated yet.</span>
                     )}
                   </div>
                 </div>
@@ -1934,6 +2091,57 @@ export default function App() {
                 />
                 <span className="text-xs font-mono font-bold text-emerald-200">Revert on Stable (&lt;100ms for 2m)</span>
               </label>
+              <button
+                type="button"
+                id="btn-compare-baseline-banner"
+                data-testid="btn-compare-baseline-banner"
+                onClick={() => {
+                  if (initialBaselineLatency === null) {
+                    setInitialBaselineLatency(queryResult.executionTimeMs);
+                  }
+                  setIsCompareAgainstBaselineEnabled((prev) => !prev);
+                }}
+                className={`px-3.5 py-2 font-extrabold text-xs rounded-xl shadow-lg cursor-pointer transition-all flex items-center gap-1.5 border hover:scale-105 active:scale-95 ${
+                  isCompareAgainstBaselineEnabled
+                    ? 'bg-gradient-to-r from-cyan-500 to-blue-600 text-white border-cyan-300 ring-4 ring-cyan-500/30 shadow-cyan-950/80'
+                    : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border-zinc-700'
+                }`}
+                title="Toggle comparison of current latency against initial baseline latency"
+              >
+                <Sliders className="w-3.5 h-3.5 text-cyan-200" />
+                <span>Compare Baseline</span>
+                {isCompareAgainstBaselineEnabled && (
+                  <span className="w-2 h-2 rounded-full bg-cyan-300 animate-ping" />
+                )}
+              </button>
+
+              {isCompareAgainstBaselineEnabled && (
+                <div
+                  id="banner-baseline-comparison-label"
+                  data-testid="banner-baseline-comparison-label"
+                  className="flex items-center gap-2 px-3 py-2 bg-zinc-950/90 rounded-xl border border-cyan-500/50 text-xs font-mono w-full sm:w-auto animate-fadeIn"
+                >
+                  <span className="text-cyan-400 font-bold">Baseline:</span>
+                  <span className="text-zinc-200">{(initialBaselineLatency ?? queryResult.executionTimeMs).toFixed(1)}ms</span>
+                  <span className="text-zinc-500">→</span>
+                  <span className="text-cyan-400 font-bold">Current:</span>
+                  <span className="text-zinc-200">{queryResult.executionTimeMs.toFixed(1)}ms</span>
+                  {(() => {
+                    const base = initialBaselineLatency ?? queryResult.executionTimeMs;
+                    const diff = queryResult.executionTimeMs - base;
+                    const pct = base > 0 ? (diff / base) * 100 : 0;
+                    const isFaster = diff <= 0;
+                    return (
+                      <span className={`font-bold px-1.5 py-0.5 rounded text-[11px] ${
+                        isFaster ? 'bg-emerald-950 text-emerald-300 border border-emerald-600/50' : 'bg-rose-950 text-rose-300 border border-rose-600/50'
+                      }`}>
+                        {isFaster ? `▼ ${Math.abs(diff).toFixed(1)}ms (${Math.abs(pct).toFixed(1)}% faster)` : `▲ +${diff.toFixed(1)}ms (+${pct.toFixed(1)}% slower)`}
+                      </span>
+                    );
+                  })()}
+                </div>
+              )}
+
               <button
                 type="button"
                 id="btn-quick-fix-all-banner"
@@ -2153,6 +2361,29 @@ export default function App() {
                     {isGeneratingDiagnosticPdf ? 'Processing' : showPdfQueueToast ? 'Queued' : 'Ready'}
                   </span>
                 </button>
+                <div className="relative group inline-flex items-center ml-2">
+                  <span
+                    id="icon-pdf-export-info"
+                    data-testid="icon-pdf-export-info"
+                    className="p-1.5 text-indigo-300 hover:text-white cursor-help transition-colors rounded-xl bg-indigo-950/80 border border-indigo-500/40 inline-flex items-center justify-center shadow-xs"
+                    title={
+                      !flags.batchEagerLoading
+                        ? 'Correlation report includes N+1 child query execution timelines, lock-contention histograms, and unbatched cascade metrics (Batch Eager Loading is disabled).'
+                        : !flags.btreeIndexing
+                        ? 'Correlation report includes table scan overhead curves, missing B-tree index impact analyses, and sequential scan durations.'
+                        : 'Correlation report includes multi-panel SLA sparklines, telemetry correlations across active optimization flags, and root-cause recommendations.'
+                    }
+                  >
+                    <Info className="w-4 h-4 text-indigo-300 hover:text-white" />
+                  </span>
+                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 p-2.5 bg-zinc-900 border border-indigo-500/60 text-indigo-100 text-xs font-sans rounded-xl shadow-2xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 text-center leading-relaxed">
+                    {!flags.batchEagerLoading
+                      ? 'Correlation report includes N+1 child query execution timelines, lock-contention histograms, and unbatched cascade metrics (Batch Eager Loading is disabled).'
+                      : !flags.btreeIndexing
+                      ? 'Correlation report includes table scan overhead curves, missing B-tree index impact analyses, and sequential scan durations.'
+                      : 'Correlation report includes multi-panel SLA sparklines, telemetry correlations across active optimization flags, and root-cause recommendations.'}
+                  </div>
+                </div>
                 {isGeneratingDiagnosticPdf && (
                   <button
                     type="button"
@@ -2209,6 +2440,27 @@ export default function App() {
                 </button>
                 <button
                   type="button"
+                  id="btn-configure-csv-columns-banner"
+                  data-testid="btn-configure-csv-columns-banner"
+                  onClick={() => setIsCsvColumnsModalOpen(true)}
+                  className="px-2.5 py-1.5 bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-500/40 hover:border-indigo-400 text-indigo-200 hover:text-white rounded-xl text-xs font-mono font-semibold transition-all duration-200 cursor-pointer flex items-center gap-1.5 shadow-xs ml-1"
+                  title="Configure CSV Columns: Select which specific metrics are included in generated diagnostic CSV reports"
+                >
+                  <Sliders className="w-3.5 h-3.5 text-indigo-300" />
+                  <span>Configure CSV Columns</span>
+                </button>
+                <button
+                  type="button"
+                  id="btn-export-diagnostics-csv-banner"
+                  data-testid="btn-export-diagnostics-csv-banner"
+                  onClick={handleExportDiagnosticsCsv}
+                  className="p-2 text-indigo-300 hover:text-white hover:bg-indigo-800/40 rounded-xl transition-all duration-300 cursor-pointer border border-transparent hover:border-indigo-400/50 ml-1"
+                  title="Export Diagnostics to CSV: Serialize current queryResult metrics and flags to a downloadable CSV"
+                >
+                  <FileSpreadsheet className="w-4 h-4 text-indigo-300 hover:text-white" />
+                </button>
+                <button
+                  type="button"
                   id="btn-export-logs-csv-banner"
                   data-testid="btn-export-logs-csv-banner"
                   onClick={handleExportSerializationLogsCsv}
@@ -2240,14 +2492,38 @@ export default function App() {
               </div>
               <div className="relative">
                 {showDismissConfirmation && (
-                  <div className="absolute -top-36 right-0 bg-zinc-900 border border-rose-500/80 text-white p-3.5 rounded-2xl text-xs shadow-2xl z-50 w-72 space-y-2.5 animate-fadeIn">
+                  <div className="absolute -top-52 right-0 bg-zinc-900 border border-rose-500/80 text-white p-4 rounded-2xl text-xs shadow-2xl z-50 w-80 space-y-3 animate-fadeIn">
                     <div className="flex items-center justify-between font-extrabold text-rose-300">
                       <span>⚠️ Confirm Banner Dismissal</span>
                       <button onClick={() => setShowDismissConfirmation(false)} className="text-zinc-400 hover:text-white cursor-pointer">✕</button>
                     </div>
                     <p className="text-[11px] text-zinc-300 leading-relaxed">
-                      Are you sure you want to dismiss this critical alert? This will suppress the warning for 5 minutes during troubleshooting.
+                      Select suppression duration for this critical alert:
                     </p>
+                    <div className="space-y-1.5 bg-zinc-950/70 p-2.5 rounded-xl border border-zinc-800">
+                      <label className="flex items-center gap-2.5 cursor-pointer select-none text-xs text-zinc-200">
+                        <input
+                          type="radio"
+                          name="dismissal-duration"
+                          value="5min"
+                          checked={dismissalDuration === '5min'}
+                          onChange={() => setDismissalDuration('5min')}
+                          className="accent-rose-500 w-4 h-4 cursor-pointer"
+                        />
+                        <span>Suppress for <strong>5 minutes</strong></span>
+                      </label>
+                      <label className="flex items-center gap-2.5 cursor-pointer select-none text-xs text-zinc-200">
+                        <input
+                          type="radio"
+                          name="dismissal-duration"
+                          value="1hour"
+                          checked={dismissalDuration === '1hour'}
+                          onChange={() => setDismissalDuration('1hour')}
+                          className="accent-rose-500 w-4 h-4 cursor-pointer"
+                        />
+                        <span>Suppress for <strong>1 hour</strong></span>
+                      </label>
+                    </div>
                     <div className="flex items-center justify-end gap-2 pt-1 border-t border-zinc-800">
                       <button
                         type="button"
@@ -2258,12 +2534,12 @@ export default function App() {
                       </button>
                       <button
                         type="button"
-                        id="btn-confirm-dismiss-5min"
-                        data-testid="btn-confirm-dismiss-5min"
-                        onClick={handleConfirmDismiss5Min}
+                        id="btn-confirm-dismiss-duration"
+                        data-testid="btn-confirm-dismiss-duration"
+                        onClick={handleConfirmDismiss}
                         className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-[11px] font-extrabold cursor-pointer shadow-md transition-all"
                       >
-                        Confirm Dismiss (5m)
+                        Confirm Dismiss ({dismissalDuration === '1hour' ? '1h' : '5m'})
                       </button>
                     </div>
                   </div>
