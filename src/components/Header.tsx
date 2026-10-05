@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Database, Zap, AlertTriangle, CheckCircle2, Play, RefreshCw, TrendingDown, Table, UploadCloud, Sliders, Sparkles, ArrowRight, Download, RotateCcw, X, CheckSquare, Square, Camera, Flame, Keyboard } from 'lucide-react';
 import { OptimizationFlags, DataTapeEntry } from '../types';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
+import { HeatmapIntensityScale } from './HeatmapIntensityScale';
 
 interface HeaderProps {
   flags?: OptimizationFlags;
@@ -378,22 +379,32 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
 
           {/* Query Intensity Overlay Toggle */}
-          <button
-            type="button"
-            id="btn-toggle-query-intensity"
-            data-testid="btn-toggle-query-intensity"
-            onClick={() => onToggleQueryIntensityOverlay?.(!showQueryIntensityOverlay)}
-            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-xs border ${
-              showQueryIntensityOverlay
-                ? 'bg-gradient-to-r from-rose-600 to-amber-600 text-white border-rose-700 shadow-md animate-pulse'
-                : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-800 border-zinc-300'
-            }`}
-            title="Toggle global Query Intensity heatmap overlay across the application based on execution plan cost metrics"
-            aria-pressed={showQueryIntensityOverlay}
-          >
-            <Flame className={`w-3.5 h-3.5 ${showQueryIntensityOverlay ? 'text-amber-200 animate-bounce' : 'text-rose-600'}`} />
-            <span>Query Intensity {showQueryIntensityOverlay ? 'ON' : ''}</span>
-          </button>
+          <div className="relative">
+            <button
+              type="button"
+              id="btn-toggle-query-intensity"
+              data-testid="btn-toggle-query-intensity"
+              onClick={() => onToggleQueryIntensityOverlay?.(!showQueryIntensityOverlay)}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-xs border ${
+                showQueryIntensityOverlay
+                  ? 'bg-gradient-to-r from-rose-600 to-amber-600 text-white border-rose-700 shadow-md animate-pulse'
+                  : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-800 border-zinc-300'
+              }`}
+              title="Toggle global Query Intensity heatmap overlay across the application based on execution plan cost metrics"
+              aria-pressed={showQueryIntensityOverlay}
+            >
+              <Flame className={`w-3.5 h-3.5 ${showQueryIntensityOverlay ? 'text-amber-200 animate-bounce' : 'text-rose-600'}`} />
+              <span>Query Intensity {showQueryIntensityOverlay ? 'ON' : ''}</span>
+            </button>
+            {showQueryIntensityOverlay && (
+              <div className="absolute top-full right-0 mt-1.5 z-50 animate-fadeIn">
+                <HeatmapIntensityScale
+                  compact={true}
+                  onClose={() => onToggleQueryIntensityOverlay?.(false)}
+                />
+              </div>
+            )}
+          </div>
 
           {onOpenBulkImport && (
             <button

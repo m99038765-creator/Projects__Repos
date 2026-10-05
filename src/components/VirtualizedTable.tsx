@@ -65,6 +65,7 @@ import { deleteRecordsByIds } from '../db/databaseEngine';
 import { CpuPerformanceGlowBadge } from './CpuPerformanceGlowBadge';
 import { DeleteConfirmationOverlay } from './DeleteConfirmationOverlay';
 import { CompareLatencyModal } from './CompareLatencyModal';
+import { ExportPreviewModal } from './ExportPreviewModal';
 import { LatencyDistributionModal } from './LatencyDistributionModal';
 import { SearchHistoryDrawer } from './SearchHistoryDrawer';
 import {
@@ -116,6 +117,7 @@ interface VirtualizedTableProps {
   executionTimeMs?: number;
   isLoading?: boolean;
   onSimulateHeavyFetch?: () => void;
+  showN1CascadeOverlay?: boolean;
 }
 
 export interface LatencyHeatmapLayersState {
@@ -367,7 +369,8 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
   onHeatmapLayersChange,
   isLoading = false,
   onSimulateHeavyFetch,
-  executionTimeMs = 0
+  executionTimeMs = 0,
+  showN1CascadeOverlay = false
 }) => {
   const safeFlags: OptimizationFlags = {
     batchEagerLoading: true,
@@ -475,6 +478,10 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
   const [pinnedInsightRowId, setPinnedInsightRowId] = useState<string | null>(null);
   const [exportStats, setExportStats] = useState<ExportPerformanceResult | null>(null);
   const [isExporting, setIsExporting] = useState(false);
+  const [isExportPreviewOpen, setIsExportPreviewOpen] = useState<boolean>(false);
+  const [exportPreviewFormat, setExportPreviewFormat] = useState<ExportFormat>('csv');
+  const [exportPreviewRecords, setExportPreviewRecords] = useState<TransactionRecord[]>([]);
+  const [exportPreviewPrefix, setExportPreviewPrefix] = useState<string>('filtered_transactions');
   const containerRef = useRef<HTMLDivElement>(null);
   const [internalFormat, setInternalFormat] = useState<ExportFormat>(selectedExportFormat);
   const activeFormat = selectedExportFormat || internalFormat;
@@ -1620,56 +1627,10 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
     const selectedRecords = records.filter((r) => selectedRowIds.has(r.id));
     if (selectedRecords.length === 0 || activeExporting) return;
 
-    setIsExporting(true);
-    const startTime = performance.now();
-
-    setTimeout(async () => {
-      try {
-        let { blob, filename, stats } = exportRecords(
-          selectedRecords,
-          formatToExport,
-          `bulk_selected_transactions_${selectedRecords.length}`,
-          { includeHeaders: batchIncludeHeaders }
-        );
-
-        let wasCompressed = false;
-        if (batchEnableCompression) {
-          const compressionResult = await compressBlobGzip(blob);
-          if (compressionResult.isCompressed) {
-            blob = compressionResult.blob;
-            filename = `${filename}.gz`;
-            wasCompressed = true;
-            stats = {
-              ...stats,
-              fileSizeBytes: blob.size,
-              formatName: `${stats.formatName} [GZIP]`
-            };
-          }
-        }
-
-        triggerFileDownload(blob, filename);
-        setExportStats(stats);
-        onExportComplete?.(stats);
-
-        const elapsedMs = Math.max(0.1, Number((performance.now() - startTime).toFixed(1)));
-        const compressionSuffix = wasCompressed ? ' (GZIP Compressed)' : '';
-        const headerSuffix = formatToExport === 'csv' && !batchIncludeHeaders ? ' (No Headers)' : '';
-
-        setBatchNotification({
-          type: 'export',
-          title: 'Bulk Export Completed',
-          message: `Exported ${selectedRecords.length.toLocaleString()} rows to ${formatToExport.toUpperCase()}${compressionSuffix}${headerSuffix} in ${elapsedMs}ms`,
-          rowsProcessed: selectedRecords.length,
-          elapsedMs,
-          format: `${formatToExport.toUpperCase()}${wasCompressed ? '.GZ' : ''}`
-        });
-        setTimeout(() => setBatchNotification(null), 5000);
-      } catch (err) {
-        console.error('Failed to bulk export selected records:', err);
-      } finally {
-        setIsExporting(false);
-      }
-    }, 10);
+    setExportPreviewFormat(formatToExport);
+    setExportPreviewRecords(selectedRecords);
+    setExportPreviewPrefix(`bulk_selected_transactions_${selectedRecords.length}`);
+    setIsExportPreviewOpen(true);
   };
 
   const handleRequestBatchDelete = () => {
@@ -1818,17 +1779,67 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
       return;
     }
 
+    setExportPreviewFormat(targetFormat);
+    setExportPreviewRecords(records);
+    setExportPreviewPrefix('filtered_transactions');
+    setIsExportPreviewOpen(true);
+  };
+
+  const handleConfirmPreviewExport = (
+    formatToExport: ExportFormat,
+    options: { includeHeaders: boolean; pretty: boolean }
+  ) => {
+    setIsExportPreviewOpen(false);
     setIsExporting(true);
-    setTimeout(() => {
+
+    const targetRecords = exportPreviewRecords.length > 0 ? exportPreviewRecords : records;
+    const isBatch = targetRecords.length !== records.length;
+
+    setTimeout(async () => {
       try {
-        const { blob, filename, stats } = exportRecords(records, targetFormat, 'filtered_transactions', {
-          includeHeaders: activeIncludeHeaders
-        });
+        let { blob, filename, stats } = exportRecords(
+          targetRecords,
+          formatToExport,
+          exportPreviewPrefix || 'filtered_transactions',
+          {
+            includeHeaders: options.includeHeaders,
+            pretty: options.pretty
+          }
+        );
+
+        let wasCompressed = false;
+        if (isBatch && batchEnableCompression) {
+          const compressionResult = await compressBlobGzip(blob);
+          if (compressionResult.isCompressed) {
+            blob = compressionResult.blob;
+            filename = `${filename}.gz`;
+            wasCompressed = true;
+            stats = {
+              ...stats,
+              fileSizeBytes: blob.size,
+              formatName: `${stats.formatName} [GZIP]`
+            };
+          }
+        }
+
         triggerFileDownload(blob, filename);
         setExportStats(stats);
         onExportComplete?.(stats);
+
+        if (isBatch) {
+          const compressionSuffix = wasCompressed ? ' (GZIP Compressed)' : '';
+          const headerSuffix = formatToExport === 'csv' && !options.includeHeaders ? ' (No Headers)' : '';
+          setBatchNotification({
+            type: 'export',
+            title: `Batch Export Completed (${formatToExport.toUpperCase()})`,
+            message: `Exported ${targetRecords.length.toLocaleString()} rows to ${formatToExport.toUpperCase()}${compressionSuffix}${headerSuffix} (${(stats.fileSizeBytes / 1024).toFixed(1)} KB)`,
+            rowsProcessed: targetRecords.length,
+            elapsedMs: stats.durationMs
+          });
+          setTimeout(() => setBatchNotification(null), 5000);
+        }
       } catch (err) {
-        console.error(`Failed to export ${targetFormat}:`, err);
+        console.error(`Failed to export ${formatToExport}:`, err);
       } finally {
         setIsExporting(false);
       }
@@ -4304,6 +4315,13 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                   heatmapBadgeClass = 'bg-zinc-100 text-zinc-700';
                 }
 
+                const isN1Exceeded = showN1CascadeOverlay && (recordItemCount > 5 || !safeFlags.batchEagerLoading);
+                if (isN1Exceeded) {
+                  heatmapRowStyle.backgroundColor = 'rgba(244, 63, 94, 0.22)';
+                  heatmapRowBg = 'border-2 border-rose-500 ring-4 ring-rose-500/30 shadow-lg';
+                  heatmapBadgeClass = 'bg-gradient-to-r from-rose-600 to-purple-600 text-white font-extrabold animate-pulse';
+                }
+
                 const rowQueryLatencyMs = executionTimeMs > 0 ? executionTimeMs : (breakdown.effectiveLatencyMs || 0);
                 const rowLatencyPulse = getExecutionLatencyPulse(rowQueryLatencyMs);
 
@@ -4948,6 +4966,18 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
         isOpen={isCompareModalOpen}
         onClose={() => setIsCompareModalOpen(false)}
         initialFlags={safeFlags}
+      />
+
+      {/* Pre-Export Preview Modal (Review first 5 rows before committing download) */}
+      <ExportPreviewModal
+        isOpen={isExportPreviewOpen}
+        onClose={() => setIsExportPreviewOpen(false)}
+        records={exportPreviewRecords.length > 0 ? exportPreviewRecords : records}
+        initialFormat={exportPreviewFormat}
+        includeHeaders={activeIncludeHeaders}
+        filenamePrefix={exportPreviewPrefix}
+        isExporting={activeExporting}
+        onConfirmExport={handleConfirmPreviewExport}
       />
 
       {/* Row Execution Metrics Inspection Modal */}

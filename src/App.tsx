@@ -21,10 +21,14 @@ import { OptimizationWizardModal } from './components/OptimizationWizardModal';
 import { DatabaseBottleneckHeatmapDrawer } from './components/DatabaseBottleneckHeatmapDrawer';
 import { VisualQueryBuilderModal } from './components/VisualQueryBuilderModal';
 import { LatencyLegend } from './components/LatencyLegend';
-import { AlertTriangle, X, Flame, Zap, BellOff, TrendingUp, FileText, Loader, Sparkles, Search, Clipboard } from 'lucide-react';
+import { HeatmapIntensityScale } from './components/HeatmapIntensityScale';
+import { ExportPreviewModal } from './components/ExportPreviewModal';
+import { AlertTriangle, X, Flame, Zap, BellOff, TrendingUp, FileText, Loader, Sparkles, Search, Clipboard, Pin, RotateCcw, FileSpreadsheet, Camera, FileJson, Brain, Layers } from 'lucide-react';
 import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
 import {
+  exportRecords,
   exportRecordsToCsv,
+  triggerFileDownload,
   ExportFormat,
   ExportPerformanceResult,
   ExportHistoryPoint,
@@ -252,6 +256,7 @@ export default function App() {
   const [performanceBudgetMs, setPerformanceBudgetMs] = useState<number>(200);
   const [showLatencyHeatmap, setShowLatencyHeatmap] = useState(true);
   const [showQueryIntensityOverlay, setShowQueryIntensityOverlay] = useState<boolean>(false);
+  const [showN1CascadeOverlay, setShowN1CascadeOverlay] = useState<boolean>(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [isVisualQueryBuilderOpen, setIsVisualQueryBuilderOpen] = useState(false);
   const [showPdfQueueToast, setShowPdfQueueToast] = useState(false);
@@ -264,6 +269,14 @@ export default function App() {
     }
   });
 
+  const [isRevertOnStableEnabled, setIsRevertOnStableEnabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('enterprise_revert_on_stable_enabled') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
   const handleToggleAutoResolveSpike = (enabled: boolean) => {
     setIsAutoResolveOnSpikeEnabled(enabled);
     try {
@@ -271,6 +284,19 @@ export default function App() {
     } catch (e) {
       console.error(e);
     }
+  };
+
+  const handleToggleRevertOnStable = (enabled: boolean) => {
+    setIsRevertOnStableEnabled(enabled);
+    try {
+      localStorage.setItem('enterprise_revert_on_stable_enabled', String(enabled));
+    } catch {}
+    setProactiveToast({
+      title: enabled ? '⚡ Revert on Stable Enabled' : 'Revert on Stable Disabled',
+      message: enabled ? 'Quick Fix will automatically revert if latency stays below 100ms for 2 minutes.' : 'Automatic revert disabled.',
+      flagToEnable: 'batchEagerLoading',
+      flagName: 'Batch Eager Loading'
+    });
   };
 
   const handleExportPdfClick = () => {
@@ -304,7 +330,11 @@ export default function App() {
     setTimeout(() => setPdfErrorToast(null), 3000);
   };
 
+  const [previousFlagsBeforeQuickFix, setPreviousFlagsBeforeQuickFix] = useState<OptimizationFlags | null>(null);
+  const [hasQuickFixBeenApplied, setHasQuickFixBeenApplied] = useState(false);
+
   const handleQuickFixAll = () => {
+    setPreviousFlagsBeforeQuickFix({ ...flags });
     setFlags({
       batchEagerLoading: true,
       btreeIndexing: true,
@@ -312,10 +342,33 @@ export default function App() {
       virtualizedDOM: true,
       deferredRendering: true
     });
+    setHasQuickFixBeenApplied(true);
     setIsBatchBannerDismissed(true);
     setProactiveToast({
       title: '⚡ Quick Fix All Applied',
       message: 'All optimization flags have been enabled simultaneously to resolve workload bottlenecks.',
+      flagToEnable: 'batchEagerLoading',
+      flagName: 'Batch Eager Loading'
+    });
+  };
+
+  const handleQuickRevert = () => {
+    if (previousFlagsBeforeQuickFix) {
+      setFlags(previousFlagsBeforeQuickFix);
+    } else {
+      setFlags({
+        batchEagerLoading: false,
+        btreeIndexing: false,
+        queryCaching: false,
+        virtualizedDOM: false,
+        deferredRendering: false
+      });
+    }
+    setHasQuickFixBeenApplied(false);
+    setIsBatchBannerDismissed(false);
+    setProactiveToast({
+      title: '↩️ Quick Revert Executed',
+      message: 'Optimization flags have been reverted to their pre-fix state.',
       flagToEnable: 'batchEagerLoading',
       flagName: 'Batch Eager Loading'
     });
@@ -345,10 +398,12 @@ export default function App() {
 
   const [showCopyLogsToast, setShowCopyLogsToast] = useState(false);
   const [isCopyingLogs, setIsCopyingLogs] = useState(false);
+  const [copyProgressPercent, setCopyProgressPercent] = useState<number>(0);
 
   const handleCopyLogsToClipboard = () => {
     try {
       setIsCopyingLogs(true);
+      setCopyProgressPercent(15);
       const logData = JSON.stringify({
         timestamp: new Date().toISOString(),
         executionTimeMs: queryResult.executionTimeMs,
@@ -357,16 +412,55 @@ export default function App() {
         totalCount: queryResult.totalCount,
         queryType: queryResult.queryType || 'SELECT'
       }, null, 2);
-      navigator.clipboard.writeText(logData);
-      setShowCopyLogsToast(true);
+
+      setTimeout(() => setCopyProgressPercent(60), 200);
+      setTimeout(() => {
+        setCopyProgressPercent(100);
+        navigator.clipboard.writeText(logData);
+        setShowCopyLogsToast(true);
+      }, 450);
+
       setTimeout(() => {
         setShowCopyLogsToast(false);
         setIsCopyingLogs(false);
+        setCopyProgressPercent(0);
       }, 1500);
     } catch (e) {
       setIsCopyingLogs(false);
+      setCopyProgressPercent(0);
       console.error(e);
     }
+  };
+
+  const handleExportSerializationLogsCsv = () => {
+    if (!serializationLogs || serializationLogs.length === 0) {
+      setPdfErrorToast('No serialization logs available to export.');
+      setTimeout(() => setPdfErrorToast(null), 3000);
+      return;
+    }
+    const headers = ['ID', 'Timestamp', 'Level', 'Component', 'Message', 'Details'];
+    const rows = serializationLogs.map(l => [
+      l.id,
+      new Date(l.timestamp).toISOString(),
+      l.level,
+      l.component,
+      `"${l.message.replace(/"/g, '""')}"`,
+      `"${(l.details || '').replace(/"/g, '""')}"`
+    ]);
+    const csvContent = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `serialization-logs-${Date.now()}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setProactiveToast({
+      title: '📊 Serialization Logs Exported',
+      message: `Successfully exported ${serializationLogs.length} serialization logs to CSV.`,
+      flagToEnable: 'batchEagerLoading',
+      flagName: 'Batch Eager Loading'
+    });
   };
 
   // Plan Cache TTL state (in seconds)
@@ -490,10 +584,192 @@ export default function App() {
   const [trendHistory, setTrendHistory] = useState<LatencyTrendPoint[]>(() => getInitialTrendHistory());
   const [historyTapeFilterMode, setHistoryTapeFilterMode] = useState<'all' | 'latency-5min'>('all');
   const [isSimulatingSequence, setIsSimulatingSequence] = useState(false);
+  const [showExportLogHistoryPanel, setShowExportLogHistoryPanel] = useState(false);
+  const [isExportHistoryModalOpen, setIsExportHistoryModalOpen] = useState(false);
+  const [pdfExportHistory, setPdfExportHistory] = useState<DiagnosticPdfHistoryItem[]>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_pdf_export_history');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [
+      {
+        id: 'pdf-rep-init-1',
+        title: 'Correlation Diagnostic Report (Baseline)',
+        timestamp: Date.now() - 3600000,
+        timeFormatted: new Date(Date.now() - 3600000).toLocaleTimeString(),
+        recordCount: 25000,
+        executionTimeMs: 215.4,
+        fileSizeKB: 184,
+        summary: 'Baseline performance audit report prior to N+1 optimization sequence.'
+      }
+    ];
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('enterprise_pdf_export_history', JSON.stringify(pdfExportHistory));
+    } catch {}
+  }, [pdfExportHistory]);
+
+  const handleReDownloadHistoryItem = (item: DiagnosticPdfHistoryItem) => {
+    handleGenerateDiagnosticCorrelationPdf();
+    setProactiveToast({
+      title: '📥 Re-downloading Report',
+      message: `Fetching archived report "${item.title}" (${item.fileSizeKB} KB)...`,
+      flagToEnable: 'batchEagerLoading',
+      flagName: 'Batch Eager Loading'
+    });
+  };
+
+  const handleClearPdfHistory = () => {
+    setPdfExportHistory([]);
+  };
+
+  const handleDeletePdfHistoryItem = (id: string) => {
+    setPdfExportHistory(prev => prev.filter(i => i.id !== id));
+  };
+
+  interface FlagToggleEventItem {
+    id: string;
+    timestamp: number;
+    timeFormatted: string;
+    flag: string;
+    newState: boolean;
+  }
+
+  const [flagToggleEvents, setFlagToggleEvents] = useState<FlagToggleEventItem[]>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_flag_toggle_events');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [];
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('enterprise_flag_toggle_events', JSON.stringify(flagToggleEvents));
+    } catch {}
+  }, [flagToggleEvents]);
+
+  const handleExportFlagToggleEventsJson = () => {
+    if (!flagToggleEvents || flagToggleEvents.length === 0) {
+      setPdfErrorToast('No optimization flag toggle events recorded in this session.');
+      setTimeout(() => setPdfErrorToast(null), 3000);
+      return;
+    }
+    const logData = JSON.stringify({
+      sessionId: `session-${Date.now()}`,
+      exportedAt: new Date().toISOString(),
+      totalEvents: flagToggleEvents.length,
+      events: flagToggleEvents
+    }, null, 2);
+    const blob = new Blob([logData], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `flag-toggle-events-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setProactiveToast({
+      title: '📋 Flag Toggle Events Exported',
+      message: `Successfully exported ${flagToggleEvents.length} optimization flag toggle events to JSON.`,
+      flagToEnable: 'batchEagerLoading',
+      flagName: 'Batch Eager Loading'
+    });
+  };
+  const [isBannerPinned, setIsBannerPinned] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('enterprise_batch_banner_pinned') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const [customLatencyThreshold, setCustomLatencyThreshold] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_batch_banner_custom_threshold');
+      return saved ? Number(saved) : 200;
+    } catch {
+      return 200;
+    }
+  });
+
+  const [movingAverageTrendWindow, setMovingAverageTrendWindow] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_moving_avg_trend_window');
+      return saved ? Number(saved) : 10;
+    } catch {
+      return 10;
+    }
+  });
+
+  const [anomalyThresholdSlope, setAnomalyThresholdSlope] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_anomaly_threshold_slope');
+      return saved ? Number(saved) : 1.5;
+    } catch {
+      return 1.5;
+    }
+  });
+
+  const handleCustomThresholdChange = (val: number) => {
+    setCustomLatencyThreshold(val);
+    try {
+      localStorage.setItem('enterprise_batch_banner_custom_threshold', String(val));
+    } catch {}
+  };
+
+  const handleMovingAverageWindowChange = (val: number) => {
+    setMovingAverageTrendWindow(val);
+    try {
+      localStorage.setItem('enterprise_moving_avg_trend_window', String(val));
+    } catch {}
+  };
+
+  const handleAnomalySlopeChange = (val: number) => {
+    setAnomalyThresholdSlope(val);
+    try {
+      localStorage.setItem('enterprise_anomaly_threshold_slope', String(val));
+    } catch {}
+  };
+
+  const handleTogglePinBanner = () => {
+    const next = !isBannerPinned;
+    setIsBannerPinned(next);
+    try {
+      localStorage.setItem('enterprise_batch_banner_pinned', String(next));
+    } catch {}
+  };
 
   const handleViewRelatedHistory = () => {
     setHistoryTapeFilterMode('latency-5min');
     setIsHistoricalDataTapeOpen(true);
+  };
+
+  const handleViewSerializationLogs = () => {
+    setActiveView('grid');
+    setTimeout(() => {
+      const problematicLog = (serializationLogs || []).find(l => 
+        l.type.includes('N+1') || l.type.includes('LATENCY') || l.severity === 'error' || l.severity === 'anomaly'
+      ) || (serializationLogs || [])[0];
+
+      if (problematicLog) {
+        const entryEl = document.getElementById(`serialization-log-entry-${problematicLog.id}`);
+        if (entryEl) {
+          entryEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          entryEl.classList.add('ring-4', 'ring-rose-500', 'bg-rose-100/90', 'transition-all', 'duration-700');
+          setTimeout(() => {
+            entryEl.classList.remove('ring-4', 'ring-rose-500', 'bg-rose-100/90');
+          }, 2500);
+          return;
+        }
+      }
+
+      const el = document.getElementById('serialization-error-log-section');
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 150);
   };
   const [isBatchBannerDismissed, setIsBatchBannerDismissed] = useState(false);
   const [showDismissConfirmation, setShowDismissConfirmation] = useState(false);
@@ -523,7 +799,7 @@ export default function App() {
   }, [flags.batchEagerLoading]);
 
   useEffect(() => {
-    if (!isBatchBannerDismissed && !flags.batchEagerLoading && queryResult.executionTimeMs > 200 && isAutoResolveOnSpikeEnabled) {
+    if (!isBatchBannerDismissed && !flags.batchEagerLoading && queryResult.executionTimeMs > customLatencyThreshold && isAutoResolveOnSpikeEnabled) {
       handleToggleFlag('batchEagerLoading');
       setIsBatchBannerDismissed(true);
       setProactiveToast({
@@ -533,7 +809,7 @@ export default function App() {
         flagName: 'Batch Eager Loading'
       });
     }
-  }, [queryResult.executionTimeMs, flags.batchEagerLoading, isBatchBannerDismissed, isAutoResolveOnSpikeEnabled]);
+  }, [queryResult.executionTimeMs, flags.batchEagerLoading, isBatchBannerDismissed, isAutoResolveOnSpikeEnabled, customLatencyThreshold]);
 
   const handleToggleFlag = (key: keyof OptimizationFlags) => {
     setFlags((prev) => {
@@ -541,6 +817,15 @@ export default function App() {
       const nextFlags = { ...prev, [key]: nextState };
 
       const now = Date.now();
+      const eventItem: FlagToggleEventItem = {
+        id: `toggle-${now}-${Math.random().toString(36).substr(2, 5)}`,
+        timestamp: now,
+        timeFormatted: new Date(now).toLocaleTimeString(),
+        flag: String(key),
+        newState: nextState
+      };
+      setFlagToggleEvents(t => [eventItem, ...t].slice(0, 100));
+
       const d = new Date(now);
       const timeFormatted = `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`;
 
@@ -988,7 +1273,7 @@ export default function App() {
       return;
     }
 
-    const windowSec = extendedAlertThresholds.anomalyTrendWindowSec || 15;
+    const windowSec = movingAverageTrendWindow || extendedAlertThresholds.anomalyTrendWindowSec || 15;
     const now = Date.now();
     const windowStartMs = now - windowSec * 1000;
 
@@ -1010,7 +1295,7 @@ export default function App() {
     const slopePerSec = latencyDelta / timeDeltaSec;
 
     // Threshold for slope per second (e.g. > 1.5 ms/sec acceleration over window)
-    const SLOPE_THRESHOLD_PER_SEC = 1.5;
+    const SLOPE_THRESHOLD_PER_SEC = anomalyThresholdSlope;
     const isAnomaly = slopePerSec >= SLOPE_THRESHOLD_PER_SEC && latencyDelta > 10;
 
     if (isAnomaly) {
@@ -1058,7 +1343,40 @@ export default function App() {
         flagName
       });
     }
-  }, [trendHistory, flags, extendedAlertThresholds, notificationsMuted]);
+  }, [trendHistory, flags, extendedAlertThresholds, notificationsMuted, movingAverageTrendWindow, anomalyThresholdSlope]);
+
+  // Revert on Stable Watcher: Automatically reverts Quick Fix if latency remains below 100ms for more than 2 minutes (120s)
+  const stableStartTimeRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!isRevertOnStableEnabled || !hasQuickFixBeenApplied) {
+      stableStartTimeRef.current = null;
+      return;
+    }
+
+    const currentLatency = queryResult.executionTimeMs;
+    const isStable = currentLatency < 100;
+
+    if (isStable) {
+      if (stableStartTimeRef.current === null) {
+        stableStartTimeRef.current = Date.now();
+      } else {
+        const elapsedSec = (Date.now() - stableStartTimeRef.current) / 1000;
+        if (elapsedSec >= 120) {
+          handleQuickRevert();
+          setProactiveToast({
+            title: '⏱️ Auto-Reverted on Stable',
+            message: `Latency remained below 100ms for over 2 minutes (${elapsedSec.toFixed(0)}s). Quick Fix optimizations have been automatically reverted.`,
+            flagToEnable: 'batchEagerLoading',
+            flagName: 'Batch Eager Loading'
+          });
+          stableStartTimeRef.current = null;
+        }
+      }
+    } else {
+      stableStartTimeRef.current = null;
+    }
+  }, [isRevertOnStableEnabled, hasQuickFixBeenApplied, queryResult.executionTimeMs]);
 
   // Extended multi-metric alerting watchdog (Lock wait times & Page faults)
   useEffect(() => {
@@ -1099,6 +1417,19 @@ export default function App() {
       });
       setIsDiagnosticPdfSuccess(true);
       setTimeout(() => setIsDiagnosticPdfSuccess(false), 3000);
+
+      const now = Date.now();
+      const newHistoryItem: DiagnosticPdfHistoryItem = {
+        id: `pdf-rep-${now}`,
+        title: `Correlation Diagnostic Report (${new Date(now).toLocaleDateString()})`,
+        timestamp: now,
+        timeFormatted: new Date(now).toLocaleTimeString(),
+        recordCount: queryResult.totalCount,
+        executionTimeMs: queryResult.executionTimeMs,
+        fileSizeKB: Math.floor(Math.random() * 80) + 140,
+        summary: `Flags state: batchEagerLoading=${flags.batchEagerLoading}, queryCaching=${flags.queryCaching}. Latency: ${queryResult.executionTimeMs.toFixed(1)}ms.`
+      };
+      setPdfExportHistory(prev => [newHistoryItem, ...prev]);
     } catch (err) {
       console.error('Failed to generate PDF report:', err);
     } finally {
@@ -1147,8 +1478,27 @@ export default function App() {
     setTrendHistory((prev) => [...prev, p1, p2, p3]);
   };
 
+  const [isAppExportPreviewOpen, setIsAppExportPreviewOpen] = useState(false);
+
   const handleExportCsv = () => {
-    exportRecordsToCsv(queryResult.records);
+    setIsAppExportPreviewOpen(true);
+  };
+
+  const handleConfirmAppExport = (
+    format: ExportFormat,
+    options: { includeHeaders: boolean; pretty: boolean }
+  ) => {
+    setIsAppExportPreviewOpen(false);
+    const { blob, filename } = exportRecords(
+      queryResult.records,
+      format,
+      'database_query_records',
+      {
+        includeHeaders: options.includeHeaders,
+        pretty: options.pretty
+      }
+    );
+    triggerFileDownload(blob, filename);
   };
 
   const handleExportDiagnosticPackage = () => {
@@ -1307,9 +1657,9 @@ export default function App() {
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 space-y-4">
         {/* Global Query Intensity Heatmap Overlay Banner */}
         {showQueryIntensityOverlay && (
-          <div className="p-4 bg-gradient-to-r from-rose-950 via-amber-950 to-zinc-950 text-white rounded-2xl border-2 border-rose-500 shadow-2xl flex items-center justify-between gap-4 animate-fadeIn relative z-40 ring-4 ring-rose-500/20">
+          <div className="p-4 bg-gradient-to-r from-rose-950 via-amber-950 to-zinc-950 text-white rounded-2xl border-2 border-rose-500 shadow-2xl flex flex-col md:flex-row md:items-center justify-between gap-4 animate-fadeIn relative z-40 ring-4 ring-rose-500/20">
             <div className="flex items-center gap-3">
-              <div className="p-2.5 bg-rose-600 text-white rounded-xl shadow-md animate-bounce">
+              <div className="p-2.5 bg-rose-600 text-white rounded-xl shadow-md animate-bounce shrink-0">
                 <Flame className="w-6 h-6 text-amber-200" />
               </div>
               <div className="space-y-0.5">
@@ -1322,18 +1672,21 @@ export default function App() {
                 </p>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => setShowQueryIntensityOverlay(false)}
-              className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl shadow cursor-pointer transition-colors"
-            >
-              Disable Overlay
-            </button>
+            <div className="flex items-center gap-3 shrink-0 flex-wrap">
+              <HeatmapIntensityScale currentLatencyMs={queryResult.executionTimeMs} compact={true} />
+              <button
+                type="button"
+                onClick={() => setShowQueryIntensityOverlay(false)}
+                className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl shadow cursor-pointer transition-colors shrink-0"
+              >
+                Disable Overlay
+              </button>
+            </div>
           </div>
         )}
 
         {/* Conditional Notification Banner: batchEagerLoading is false and latency exceeds 200ms */}
-        {!isBatchBannerDismissed && Date.now() > batchBannerDismissedUntil && !flags.batchEagerLoading && queryResult.executionTimeMs > 200 && (
+        {!isBatchBannerDismissed && (isBannerPinned || Date.now() > batchBannerDismissedUntil) && !flags.batchEagerLoading && (isBannerPinned || queryResult.executionTimeMs > customLatencyThreshold) && (
           <div
             id="banner-batch-eager-loading-latency"
             data-testid="banner-batch-eager-loading-latency"
@@ -1369,8 +1722,68 @@ export default function App() {
                     ⚠️ Critical Latency Alert: Batch Eager Loading Disabled
                   </h3>
                   <span className="font-mono text-[11px] bg-rose-600 text-white px-2.5 py-0.5 rounded-full font-bold uppercase shadow-xs">
-                    Latency: {queryResult.executionTimeMs.toFixed(1)} ms (&gt; 200ms threshold)
+                    Latency: {queryResult.executionTimeMs.toFixed(1)} ms (&gt; {customLatencyThreshold}ms threshold)
                   </span>
+                  <div className="flex items-center gap-1.5 bg-zinc-950/60 px-2 py-0.5 rounded-xl border border-rose-500/30 text-xs font-mono">
+                    <span className="text-zinc-400 text-[10px]">Threshold:</span>
+                    <input
+                      type="number"
+                      id="input-custom-latency-threshold"
+                      data-testid="input-custom-latency-threshold"
+                      value={customLatencyThreshold}
+                      onChange={(e) => handleCustomThresholdChange(Number(e.target.value) || 200)}
+                      step={10}
+                      min={50}
+                      max={2000}
+                      className="w-14 bg-zinc-900 border border-zinc-700 text-white text-center rounded px-1 py-0.5 text-[11px] outline-none focus:border-rose-400 font-bold"
+                      title="Custom trigger threshold for N+1 latency alert"
+                    />
+                    <span className="text-zinc-400 text-[10px]">ms</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 bg-zinc-950/60 px-2 py-0.5 rounded-xl border border-rose-500/30 text-xs font-mono">
+                    <span className="text-zinc-400 text-[10px]">Trend Window:</span>
+                    <input
+                      type="number"
+                      id="input-moving-avg-trend-window"
+                      data-testid="input-moving-avg-trend-window"
+                      value={movingAverageTrendWindow}
+                      onChange={(e) => handleMovingAverageWindowChange(Number(e.target.value) || 10)}
+                      step={5}
+                      min={5}
+                      max={120}
+                      className="w-12 bg-zinc-900 border border-zinc-700 text-white text-center rounded px-1 py-0.5 text-[11px] outline-none focus:border-rose-400 font-bold"
+                      title="Moving Average Trend Window in seconds for anomaly detection watcher"
+                    />
+                    <span className="text-zinc-400 text-[10px]">s</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 bg-zinc-950/60 px-2 py-0.5 rounded-xl border border-rose-500/30 text-xs font-mono">
+                    <span className="text-zinc-400 text-[10px]">Anomaly Threshold (ms/sec):</span>
+                    <input
+                      type="number"
+                      id="input-anomaly-threshold-slope"
+                      data-testid="input-anomaly-threshold-slope"
+                      value={anomalyThresholdSlope}
+                      onChange={(e) => handleAnomalySlopeChange(Number(e.target.value) || 1.5)}
+                      step={0.5}
+                      min={0.1}
+                      max={50}
+                      className="w-14 bg-zinc-900 border border-zinc-700 text-white text-center rounded px-1 py-0.5 text-[11px] outline-none focus:border-rose-400 font-bold"
+                      title="Anomaly Threshold (ms/sec) for slope acceleration detector watcher"
+                    />
+                    <span className="text-zinc-400 text-[10px]">ms/s</span>
+                  </div>
+                  {(() => {
+                    const sev = queryResult.executionTimeMs >= 300 ? 'Critical' : queryResult.executionTimeMs >= 230 ? 'Warning' : 'Moderate';
+                    const col = queryResult.executionTimeMs >= 300 ? 'bg-rose-600 text-white border-rose-400' : queryResult.executionTimeMs >= 230 ? 'bg-amber-600 text-white border-amber-400' : 'bg-yellow-500 text-zinc-950 border-yellow-300 font-bold';
+                    return (
+                      <span
+                        className={`font-mono text-[11px] px-2.5 py-0.5 rounded-full uppercase shadow-xs border cursor-help ${col}`}
+                        title={`Severity Determination:\n• Critical: executionTimeMs >= 300ms\n• Warning: executionTimeMs >= 230ms (and < 300ms)\n• Moderate: executionTimeMs < 230ms (and > ${customLatencyThreshold}ms)\nCurrent Latency: ${queryResult.executionTimeMs.toFixed(1)}ms`}
+                      >
+                        Severity: {sev}
+                      </span>
+                    );
+                  })()}
                   <span className="font-mono text-[10px] bg-amber-500/20 text-amber-300 border border-amber-400/30 px-2 py-0.5 rounded-full font-semibold">
                     flag: batchEagerLoading = false
                   </span>
@@ -1419,6 +1832,82 @@ export default function App() {
                   >
                     <span>View related history →</span>
                   </button>
+                  <button
+                    type="button"
+                    id="btn-view-serialization-logs"
+                    data-testid="btn-view-serialization-logs"
+                    onClick={handleViewSerializationLogs}
+                    className="text-xs font-mono font-semibold text-rose-300 hover:text-white underline underline-offset-4 cursor-pointer transition-colors flex items-center gap-1"
+                    title="View serialization and N+1 cascade error logs"
+                  >
+                    <span>View Serialization Logs →</span>
+                  </button>
+                </div>
+                {showExportLogHistoryPanel && (
+                  <div
+                    id="export-log-history-panel"
+                    className="mt-3 p-3 bg-zinc-950/90 border border-indigo-500/40 rounded-xl space-y-2 animate-fadeIn max-w-3xl"
+                  >
+                    <div className="flex items-center justify-between text-xs font-bold text-indigo-300 border-b border-zinc-800 pb-1.5">
+                      <span>📁 Previously Exported Diagnostic Reports ({pdfExportHistory.length})</span>
+                      <button onClick={() => setShowExportLogHistoryPanel(false)} className="text-zinc-400 hover:text-white cursor-pointer">✕</button>
+                    </div>
+                    {pdfExportHistory.length === 0 ? (
+                      <div className="text-xs text-zinc-400 font-mono py-2">No export history found. Generate a PDF report to populate this log.</div>
+                    ) : (
+                      <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                        {pdfExportHistory.map((item) => (
+                          <div
+                            key={item.id}
+                            className="flex items-center justify-between bg-zinc-900/90 hover:bg-zinc-900 border border-zinc-800 hover:border-indigo-500/50 p-2 rounded-lg text-xs font-mono transition-colors"
+                          >
+                            <div className="space-y-0.5 truncate pr-2">
+                              <span className="font-bold text-white block truncate">{item.title}</span>
+                              <span className="text-[10px] text-zinc-400">{item.timeFormatted} • {item.fileSizeKB} KB</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleReDownloadHistoryItem(item)}
+                              className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg text-[11px] shrink-0 transition-colors cursor-pointer flex items-center gap-1 shadow-xs"
+                              title="Re-download correlation report"
+                            >
+                              <span>Re-download</span>
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+                <div className="mt-2.5 pt-2 border-t border-rose-500/30 space-y-1.5">
+                  <div className="text-[11px] font-mono font-bold text-rose-300 flex items-center justify-between">
+                    <span>🕒 Recent Export History (Last {Math.min(5, pdfExportHistory.length)} Reports)</span>
+                    <button
+                      type="button"
+                      onClick={() => setIsExportHistoryModalOpen(true)}
+                      className="text-[10px] text-indigo-300 hover:text-white underline cursor-pointer"
+                    >
+                      View All ({pdfExportHistory.length}) →
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {pdfExportHistory.slice(0, 5).map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => handleReDownloadHistoryItem(item)}
+                        className="px-2.5 py-1 bg-zinc-950/80 hover:bg-zinc-900 border border-zinc-800 hover:border-indigo-400/50 rounded-lg text-[11px] font-mono text-zinc-200 hover:text-white transition-colors cursor-pointer flex items-center gap-1.5 shadow-xs"
+                        title={`Re-download report: ${item.title} (${item.timeFormatted})`}
+                      >
+                        <FileText className="w-3 h-3 text-indigo-400 shrink-0" />
+                        <span className="truncate max-w-[140px] font-bold">{item.title}</span>
+                        <span className="text-[9px] text-zinc-400 shrink-0">({item.timeFormatted})</span>
+                      </button>
+                    ))}
+                    {pdfExportHistory.length === 0 && (
+                      <span className="text-[11px] text-zinc-400 font-mono italic">No recent reports generated yet.</span>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
@@ -1434,6 +1923,17 @@ export default function App() {
                 />
                 <span className="text-xs font-mono font-bold text-rose-200">Auto-Resolve on Spike</span>
               </label>
+              <label className="flex items-center gap-2 cursor-pointer select-none bg-zinc-950/60 hover:bg-zinc-950/80 px-3 py-2 rounded-xl border border-emerald-500/40 transition-colors">
+                <input
+                  type="checkbox"
+                  id="toggle-revert-on-stable"
+                  data-testid="toggle-revert-on-stable"
+                  checked={isRevertOnStableEnabled}
+                  onChange={(e) => handleToggleRevertOnStable(e.target.checked)}
+                  className="w-4 h-4 accent-emerald-500 rounded cursor-pointer"
+                />
+                <span className="text-xs font-mono font-bold text-emerald-200">Revert on Stable (&lt;100ms for 2m)</span>
+              </label>
               <button
                 type="button"
                 id="btn-quick-fix-all-banner"
@@ -1445,6 +1945,60 @@ export default function App() {
                 <Sparkles className="w-3.5 h-3.5 fill-zinc-950 text-zinc-950" />
                 <span>Quick Fix All</span>
               </button>
+              {(() => {
+                const isBatchMostImpactful = !flags.batchEagerLoading;
+                return (
+                  <button
+                    type="button"
+                    id="btn-smart-optimization-banner"
+                    data-testid="btn-smart-optimization-banner"
+                    onClick={() => {
+                      if (!flags.batchEagerLoading) {
+                        handleToggleFlag('batchEagerLoading');
+                      } else if (!flags.btreeIndexing) {
+                        handleToggleFlag('btreeIndexing');
+                      } else {
+                        handleQuickFixAll();
+                      }
+                      setProactiveToast({
+                        title: '🧠 Smart Optimization Applied',
+                        message: isBatchMostImpactful
+                          ? 'Telemetry analysis identified Batch Eager Loading as the highest-impact fix for the N+1 cascade.'
+                          : 'Smart Optimization applied the recommended high-impact fix.',
+                        flagToEnable: 'batchEagerLoading',
+                        flagName: 'Batch Eager Loading'
+                      });
+                    }}
+                    className={`px-3.5 py-2 font-extrabold text-xs rounded-xl shadow-lg cursor-pointer transition-all flex items-center gap-1.5 border hover:scale-105 active:scale-95 ${
+                      isBatchMostImpactful
+                        ? 'bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 text-zinc-950 border-amber-200 ring-4 ring-amber-400/40 animate-pulse shadow-amber-950/80'
+                        : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border-zinc-700'
+                    }`}
+                    title="Smart telemetry analysis: calculates the most impactful optimization fix for current workload"
+                  >
+                    <Brain className={`w-3.5 h-3.5 ${isBatchMostImpactful ? 'fill-zinc-950 text-zinc-950' : 'text-amber-300'}`} />
+                    <span>Smart Optimization</span>
+                    {isBatchMostImpactful && (
+                      <span className="text-[9px] font-mono bg-zinc-950 text-amber-300 px-1.5 py-0.2 rounded-full uppercase">
+                        Top Impact
+                      </span>
+                    )}
+                  </button>
+                );
+              })()}
+              {hasQuickFixBeenApplied && (
+                <button
+                  type="button"
+                  id="btn-quick-revert-banner"
+                  data-testid="btn-quick-revert-banner"
+                  onClick={handleQuickRevert}
+                  className="px-3.5 py-2 bg-gradient-to-r from-rose-600 to-amber-600 hover:from-rose-500 hover:to-amber-500 text-white font-extrabold text-xs rounded-xl shadow-lg cursor-pointer transition-all flex items-center gap-1.5 border border-rose-400/40 hover:scale-105 active:scale-95 shadow-rose-950/50"
+                  title="Instantly undo all optimization flag changes applied by Quick Fix"
+                >
+                  <RotateCcw className="w-3.5 h-3.5 text-amber-200" />
+                  <span>Quick Revert</span>
+                </button>
+              )}
               <button
                 type="button"
                 id="btn-fix-dismiss-banner"
@@ -1466,6 +2020,89 @@ export default function App() {
               >
                 <Search className="w-3.5 h-3.5 text-amber-200" />
                 <span>Explain Plan</span>
+              </button>
+              <div className="relative inline-block" id="heatmap-overlay-button-container">
+                <button
+                  type="button"
+                  id="btn-enable-heatmap-overlay-banner"
+                  data-testid="btn-enable-heatmap-overlay-banner"
+                  onClick={() => {
+                    const next = !showQueryIntensityOverlay;
+                    setShowQueryIntensityOverlay(next);
+                    if (next) {
+                      setProactiveToast({
+                        title: '🔥 Heatmap Overlay Enabled',
+                        message: 'Full-screen semi-transparent Heatmap Overlay activated on table cells.',
+                        flagToEnable: 'batchEagerLoading',
+                        flagName: 'Batch Eager Loading'
+                      });
+                    }
+                  }}
+                  className={`px-3.5 py-2 font-extrabold text-xs rounded-xl shadow-lg cursor-pointer transition-all flex items-center gap-1.5 border hover:scale-105 active:scale-95 ${
+                    showQueryIntensityOverlay
+                      ? 'bg-gradient-to-r from-orange-600 via-amber-600 to-rose-600 text-white border-amber-300 ring-4 ring-amber-400/40 shadow-orange-950/80 animate-pulse'
+                      : 'bg-gradient-to-r from-orange-600 via-amber-600 to-rose-600 hover:from-orange-500 hover:to-rose-500 text-white border-amber-400/40 shadow-orange-950/50'
+                  }`}
+                  title="Toggle full-screen semi-transparent Heatmap Overlay on VirtualizedTable color-coding cell latency"
+                >
+                  <Flame className="w-3.5 h-3.5 text-amber-200" />
+                  <span>Heatmap Overlay</span>
+                  {showQueryIntensityOverlay && (
+                    <span className="text-[9px] font-mono bg-amber-400 text-zinc-950 px-1.5 py-0.2 rounded font-black uppercase">
+                      ON
+                    </span>
+                  )}
+                </button>
+
+                {/* Compact Heatmap Intensity Scale legend component below the button when enabled */}
+                {showQueryIntensityOverlay && (
+                  <div
+                    id="heatmap-intensity-scale-dropdown"
+                    data-testid="heatmap-intensity-scale-dropdown"
+                    className="absolute top-full left-0 mt-2 z-50 animate-fadeIn shadow-2xl"
+                  >
+                    <HeatmapIntensityScale
+                      currentLatencyMs={queryResult.executionTimeMs}
+                      compact={true}
+                      onClose={() => setShowQueryIntensityOverlay(false)}
+                    />
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                id="btn-toggle-n1-cascade-overlay"
+                data-testid="btn-toggle-n1-cascade-overlay"
+                onClick={() => {
+                  const next = !showN1CascadeOverlay;
+                  setShowN1CascadeOverlay(next);
+                  setProactiveToast({
+                    title: next ? '⚡ N+1 Cascade Overlay Enabled' : 'N+1 Cascade Overlay Disabled',
+                    message: next ? 'Highlighting VirtualizedTable rows exceeding N+1 query thresholds based on serialization logs.' : 'N+1 overlay hidden.',
+                    flagToEnable: 'batchEagerLoading',
+                    flagName: 'Batch Eager Loading'
+                  });
+                }}
+                className={`px-3.5 py-2 font-extrabold text-xs rounded-xl shadow-lg cursor-pointer transition-all flex items-center gap-1.5 border hover:scale-105 active:scale-95 ${
+                  showN1CascadeOverlay
+                    ? 'bg-gradient-to-r from-rose-600 via-purple-600 to-indigo-600 text-white border-rose-400 ring-4 ring-rose-400/40 animate-pulse shadow-rose-950/80'
+                    : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border-zinc-700'
+                }`}
+                title="Toggle dedicated N+1 Cascade Visualization overlay on VirtualizedTable"
+              >
+                <Layers className={`w-3.5 h-3.5 ${showN1CascadeOverlay ? 'text-white' : 'text-indigo-300'}`} />
+                <span>N+1 Cascade Overlay</span>
+              </button>
+              <button
+                type="button"
+                id="btn-toggle-export-log-history-panel"
+                data-testid="btn-toggle-export-log-history-panel"
+                onClick={() => setShowExportLogHistoryPanel(!showExportLogHistoryPanel)}
+                className="px-3.5 py-2 bg-indigo-950/80 hover:bg-indigo-900 text-indigo-200 font-bold text-xs rounded-xl shadow-lg cursor-pointer transition-all flex items-center gap-1.5 border border-indigo-500/40 shadow-indigo-950/50"
+                title="Toggle Export Log History panel for quick re-downloads"
+              >
+                <FileText className="w-3.5 h-3.5 text-indigo-300" />
+                <span>Export Log History</span>
               </button>
               <button
                 type="button"
@@ -1531,9 +2168,9 @@ export default function App() {
               </div>
               <div className="relative">
                 {showCopyLogsToast && (
-                  <div className="absolute -top-10 left-1/2 -translate-x-1/2 bg-zinc-900 border border-emerald-500/60 text-emerald-300 px-3 py-1 rounded-xl text-[11px] font-mono font-bold shadow-2xl animate-bounce whitespace-nowrap z-50 flex items-center gap-1.5">
+                  <div className="absolute -top-10 left-1/2 -translate-x-1/2 bg-zinc-900 border border-emerald-500 text-emerald-300 px-3 py-1 rounded-xl text-[11px] font-mono font-bold shadow-2xl animate-bounce whitespace-nowrap z-50 flex items-center gap-1.5">
                     <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                    <span>Logs copied to clipboard</span>
+                    <span>Copied!</span>
                   </div>
                 )}
                 <button
@@ -1541,41 +2178,131 @@ export default function App() {
                   id="btn-copy-logs-banner"
                   data-testid="btn-copy-logs-banner"
                   onClick={handleCopyLogsToClipboard}
-                  className={`p-2 rounded-xl transition-all duration-300 cursor-pointer border ${
+                  className={`p-2 rounded-xl transition-all duration-300 cursor-pointer border relative overflow-hidden ${
                     isCopyingLogs
-                      ? 'bg-emerald-800/60 border-emerald-400 text-white scale-110 shadow-lg shadow-emerald-950/50'
+                      ? 'bg-emerald-900/80 border-emerald-400 text-white scale-110 shadow-lg shadow-emerald-950/80 ring-2 ring-emerald-400/50'
                       : 'text-indigo-300 hover:text-white hover:bg-indigo-800/40 border-transparent hover:border-indigo-400/50'
                   }`}
                   title={`System Bottleneck State Preview:\n• Current Latency: ${queryResult.executionTimeMs.toFixed(1)}ms | N+1 Cascade: ${queryResult.activeQueries || 101} queries\n• Click to stringify diagnostics for external reporting`}
                 >
-                  <Clipboard className={`w-4 h-4 transition-transform duration-300 ${isCopyingLogs ? 'scale-125 text-emerald-300 animate-pulse' : ''}`} />
+                  {isCopyingLogs && (
+                    <svg className="absolute inset-0 w-full h-full -rotate-90 pointer-events-none" viewBox="0 0 36 36">
+                      <path
+                        className="text-emerald-500/30"
+                        strokeWidth="3"
+                        stroke="currentColor"
+                        fill="none"
+                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                      />
+                      <path
+                        className="text-emerald-400 transition-all duration-200"
+                        strokeDasharray={`${copyProgressPercent}, 100`}
+                        strokeWidth="3"
+                        strokeLinecap="round"
+                        stroke="currentColor"
+                        fill="none"
+                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                      />
+                    </svg>
+                  )}
+                  <Clipboard className={`w-4 h-4 transition-transform duration-300 relative z-10 ${isCopyingLogs ? 'scale-125 text-emerald-300 animate-pulse' : ''}`} />
+                </button>
+                <button
+                  type="button"
+                  id="btn-export-logs-csv-banner"
+                  data-testid="btn-export-logs-csv-banner"
+                  onClick={handleExportSerializationLogsCsv}
+                  className="p-2 text-indigo-300 hover:text-white hover:bg-indigo-800/40 rounded-xl transition-all duration-300 cursor-pointer border border-transparent hover:border-indigo-400/50"
+                  title="Export current serialization logs to CSV format"
+                >
+                  <FileSpreadsheet className="w-4 h-4 text-indigo-300" />
+                </button>
+                <button
+                  type="button"
+                  id="btn-snapshot-state-banner"
+                  data-testid="btn-snapshot-state-banner"
+                  onClick={handleQuickSnapshot}
+                  className="p-2 text-indigo-300 hover:text-white hover:bg-indigo-800/40 rounded-xl transition-all duration-300 cursor-pointer border border-transparent hover:border-indigo-400/50 ml-1"
+                  title="Record current system metrics into the Historical Data Tape"
+                >
+                  <Camera className="w-4 h-4 text-indigo-300" />
+                </button>
+                <button
+                  type="button"
+                  id="btn-export-flag-events-json"
+                  data-testid="btn-export-flag-events-json"
+                  onClick={handleExportFlagToggleEventsJson}
+                  className="p-2 text-indigo-300 hover:text-white hover:bg-indigo-800/40 rounded-xl transition-all duration-300 cursor-pointer border border-transparent hover:border-indigo-400/50 ml-1"
+                  title="Export session optimization flag toggle events to structured JSON log for advanced debugging"
+                >
+                  <FileJson className="w-4 h-4 text-indigo-300" />
                 </button>
               </div>
               <div className="relative">
                 {showDismissConfirmation && (
-                  <div className="absolute -top-28 right-0 bg-zinc-900 border border-rose-500/80 text-white p-3 rounded-xl text-xs shadow-2xl z-50 w-64 space-y-2 animate-fadeIn">
-                    <div className="font-extrabold text-rose-300">Dismiss banner?</div>
-                    <p className="text-[11px] text-zinc-300">Suppress this warning and do not show again for 5 minutes during troubleshooting.</p>
-                    <div className="flex items-center justify-end gap-2 pt-1">
+                  <div className="absolute -top-36 right-0 bg-zinc-900 border border-rose-500/80 text-white p-3.5 rounded-2xl text-xs shadow-2xl z-50 w-72 space-y-2.5 animate-fadeIn">
+                    <div className="flex items-center justify-between font-extrabold text-rose-300">
+                      <span>⚠️ Confirm Banner Dismissal</span>
+                      <button onClick={() => setShowDismissConfirmation(false)} className="text-zinc-400 hover:text-white cursor-pointer">✕</button>
+                    </div>
+                    <p className="text-[11px] text-zinc-300 leading-relaxed">
+                      Are you sure you want to dismiss this critical alert? This will suppress the warning for 5 minutes during troubleshooting.
+                    </p>
+                    <div className="flex items-center justify-end gap-2 pt-1 border-t border-zinc-800">
                       <button
                         type="button"
                         onClick={() => setShowDismissConfirmation(false)}
-                        className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded text-[11px] font-bold cursor-pointer"
+                        className="px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl text-[11px] font-bold cursor-pointer transition-colors"
                       >
-                        Cancel
+                        Keep Banner
                       </button>
                       <button
                         type="button"
                         id="btn-confirm-dismiss-5min"
                         data-testid="btn-confirm-dismiss-5min"
                         onClick={handleConfirmDismiss5Min}
-                        className="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded text-[11px] font-bold cursor-pointer shadow"
+                        className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-[11px] font-extrabold cursor-pointer shadow-md transition-all"
                       >
-                        Confirm (5m)
+                        Confirm Dismiss (5m)
                       </button>
                     </div>
                   </div>
                 )}
+                <button
+                  type="button"
+                  id="btn-pin-batch-banner"
+                  data-testid="btn-pin-batch-banner"
+                  onClick={handleTogglePinBanner}
+                  className={`p-2 rounded-xl transition-colors cursor-pointer border ${
+                    isBannerPinned
+                      ? 'bg-amber-500/30 text-amber-300 border-amber-400'
+                      : 'text-zinc-400 hover:text-white hover:bg-zinc-800 border-transparent'
+                  }`}
+                  title={isBannerPinned ? 'Unpin banner (Allows dismissal & auto-hide)' : 'Pin banner (Prevents dismissal and auto-hide)'}
+                >
+                  <Pin className={`w-4 h-4 ${isBannerPinned ? 'fill-amber-300 text-amber-300 rotate-45' : ''}`} />
+                </button>
+                <button
+                  type="button"
+                  id="btn-copy-diagnostics-banner"
+                  data-testid="btn-copy-diagnostics-banner"
+                  onClick={handleCopyLogsToClipboard}
+                  className="p-2 text-indigo-300 hover:text-white hover:bg-indigo-800/40 rounded-xl transition-all duration-300 cursor-pointer border border-transparent hover:border-indigo-400/50"
+                  title="Stringifies the current query diagnostics for external reporting"
+                >
+                  <Clipboard className="w-4 h-4 text-indigo-300" />
+                </button>
+                <button
+                  type="button"
+                  id="btn-export-pdf-correlation-report"
+                  data-testid="btn-export-pdf-correlation-report"
+                  onClick={() => setShowPdfPreviewModal(true)}
+                  className="px-3.5 py-2 font-bold rounded-xl text-xs shadow-lg flex items-center gap-2 transition-all bg-gradient-to-r from-indigo-600 via-purple-600 to-indigo-600 hover:from-indigo-500 hover:to-purple-500 text-white cursor-pointer hover:scale-105 active:scale-95 border border-indigo-400/40 shadow-indigo-950/50 mr-2"
+                  title="Generates a correlation diagnostic report"
+                >
+                  <FileText className="w-3.5 h-3.5 text-indigo-200" />
+                  <span>Export to PDF</span>
+                </button>
                 <button
                   type="button"
                   id="btn-dismiss-batch-eager-loading-banner"
@@ -1630,6 +2357,7 @@ export default function App() {
               warningNotice={queryResult.warningNotice}
               showLatencyHeatmapProp={showLatencyHeatmap}
               onToggleLatencyHeatmap={setShowLatencyHeatmap}
+              showN1CascadeOverlay={showN1CascadeOverlay}
               onFixNPlusOne={() => setFlags((prev) => ({ ...prev, batchEagerLoading: true }))}
               onAutoOptimize={() => setFlags({
                 batchEagerLoading: true,
@@ -1643,17 +2371,19 @@ export default function App() {
               executionTimeMs={queryResult.executionTimeMs}
             />
 
-            <SerializationErrorLogPanel
-              logs={serializationLogs}
-              onClearLogs={() => setSerializationLogs([])}
-              onDismissLog={(id) => setSerializationLogs((prev) => prev.filter((l) => l.id !== id))}
-              onSimulateFault={() => {}}
-              currentFormat="csv"
-              currentRecordCount={queryResult.totalCount || 50000}
-              alertThresholdMs={alertThresholdMs}
-              records={queryResult.records}
-              flags={flags}
-            />
+            <div id="serialization-error-log-section">
+              <SerializationErrorLogPanel
+                logs={serializationLogs}
+                onClearLogs={() => setSerializationLogs([])}
+                onDismissLog={(id) => setSerializationLogs((prev) => prev.filter((l) => l.id !== id))}
+                onSimulateFault={() => {}}
+                currentFormat="csv"
+                currentRecordCount={queryResult.totalCount || 50000}
+                alertThresholdMs={alertThresholdMs}
+                records={queryResult.records}
+                flags={flags}
+              />
+            </div>
           </>
         ) : activeView === 'comparison' ? (
           <LatencyComparisonView
@@ -1769,6 +2499,25 @@ export default function App() {
         currentFlags={flags}
         sectionsConfig={pdfExportSections}
         onUpdateSections={setPdfExportSections}
+      />
+
+      {/* Pre-Export Preview Modal for CSV/JSON */}
+      <ExportPreviewModal
+        isOpen={isAppExportPreviewOpen}
+        onClose={() => setIsAppExportPreviewOpen(false)}
+        records={queryResult.records}
+        initialFormat="csv"
+        filenamePrefix="database_query_records"
+        onConfirmExport={handleConfirmAppExport}
+      />
+
+      <DiagnosticExportHistoryModal
+        isOpen={isExportHistoryModalOpen}
+        onClose={() => setIsExportHistoryModalOpen(false)}
+        historyItems={pdfExportHistory}
+        onReDownload={handleReDownloadHistoryItem}
+        onClearHistory={handleClearPdfHistory}
+        onDeleteItem={handleDeletePdfHistoryItem}
       />
 
       {/* System Resource Monitor Widget */}

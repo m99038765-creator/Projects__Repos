@@ -742,6 +742,15 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
   // State for Anomaly Audit Report export
   const [isExportingAnomalyReport, setIsExportingAnomalyReport] = useState(false);
   const [anomalyExportSuccessNotice, setAnomalyExportSuccessNotice] = useState<string | null>(null);
+  const [resetNoticeToast, setResetNoticeToast] = useState<string | null>(null);
+
+  const handleResetTrendHistoryClick = () => {
+    onClearHistory();
+    setResetNoticeToast('Trend history reset successfully. Clean slate provided for new diagnostic capturing.');
+    setTimeout(() => {
+      setResetNoticeToast(null);
+    }, 4000);
+  };
 
   const handleExportAnomalyReport = () => {
     setIsExportingAnomalyReport(true);
@@ -2515,16 +2524,37 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
             <button
               id="btn-clear-trend-history"
               type="button"
-              onClick={onClearHistory}
+              onClick={handleResetTrendHistoryClick}
               disabled={isSimulatingSequence || trendHistory.length <= 1}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-zinc-300 hover:bg-zinc-50 text-zinc-700 text-xs font-medium transition-colors disabled:opacity-40 cursor-pointer"
-              title="Reset history to current state"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-xs font-bold transition-all disabled:opacity-40 cursor-pointer shadow-xs"
+              title="Reset trend history state and provide a clean slate for new diagnostic capturing"
             >
-              <RotateCcw className="w-3.5 h-3.5 text-zinc-500" />
-              <span>Reset History</span>
+              <RotateCcw className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Reset Trend History</span>
             </button>
           </div>
         </div>
+
+        {/* Reset Trend History Success Toast */}
+        {resetNoticeToast && (
+          <div
+            id="toast-trend-history-reset"
+            data-testid="toast-trend-history-reset"
+            className="flex items-center justify-between gap-2 px-3.5 py-2 mt-3 rounded-lg bg-emerald-50 border border-emerald-300 text-emerald-900 text-xs font-medium animate-fadeIn shadow-2xs"
+          >
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>{resetNoticeToast}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setResetNoticeToast(null)}
+              className="text-emerald-700 hover:text-emerald-950 text-xs font-bold px-1.5 py-0.5 rounded cursor-pointer"
+            >
+              ✕
+            </button>
+          </div>
+        )}
 
         {/* Anomaly Report Export Success Feedback Toast */}
         {anomalyExportSuccessNotice && (
