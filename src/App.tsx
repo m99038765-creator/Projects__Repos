@@ -11,6 +11,7 @@ import { BenchmarkModal } from './components/BenchmarkModal';
 import { PerformanceTrendsView } from './components/PerformanceTrendsView';
 import { BulkImportModal } from './components/BulkImportModal';
 import { DiagnosticPdfPreviewModal } from './components/DiagnosticPdfPreviewModal';
+import { DiagnosticExportHistoryModal, DiagnosticPdfHistoryItem } from './components/DiagnosticExportHistoryModal';
 import { HistoricalDataTapeModal } from './components/HistoricalDataTapeModal';
 import { SerializationErrorLogPanel } from './components/SerializationErrorLogPanel';
 import { SystemResourceMonitor } from './components/SystemResourceMonitor';
@@ -318,6 +319,11 @@ export default function App() {
       flagToEnable: 'batchEagerLoading',
       flagName: 'Batch Eager Loading'
     });
+  };
+
+  const handleFixAndDismiss = () => {
+    handleQuickFixAll();
+    setIsBatchBannerDismissed(true);
   };
 
   const handleExplainPlanBannerClick = () => {
@@ -1438,6 +1444,17 @@ export default function App() {
               >
                 <Sparkles className="w-3.5 h-3.5 fill-zinc-950 text-zinc-950" />
                 <span>Quick Fix All</span>
+              </button>
+              <button
+                type="button"
+                id="btn-fix-dismiss-banner"
+                data-testid="btn-fix-dismiss-banner"
+                onClick={handleFixAndDismiss}
+                className="px-3.5 py-2 bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-xs rounded-xl shadow-lg cursor-pointer transition-all flex items-center gap-1.5 border border-emerald-400/40 hover:scale-105 active:scale-95 shadow-emerald-950/50"
+                title="Automatically fix all optimization flags and dismiss banner"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-emerald-200" />
+                <span>Fix & Dismiss</span>
               </button>
               <button
                 type="button"
