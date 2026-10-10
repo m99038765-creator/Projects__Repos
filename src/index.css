@@ -173,3 +173,34 @@
   animation: matrix-cell-reveal 0.38s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
+@keyframes banner-slide-down {
+  0% {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-slideDown {
+  animation: banner-slide-down 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes banner-pinned-glow {
+  0%, 100% {
+    box-shadow: 0 0 16px rgba(244, 63, 94, 0.45), 0 0 32px rgba(244, 63, 94, 0.25);
+    border-color: rgba(251, 113, 133, 0.95);
+  }
+  50% {
+    box-shadow: 0 0 28px rgba(244, 63, 94, 0.75), 0 0 50px rgba(244, 63, 94, 0.4);
+    border-color: rgba(254, 205, 211, 1);
+  }
+}
+
+.animate-banner-pinned-glow {
+  animation: banner-pinned-glow 2s ease-in-out infinite;
+}
+
+

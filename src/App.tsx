@@ -530,13 +530,17 @@ export default function App() {
     setRefreshKey((k) => k + 1);
   };
 
+  const [isLiveMetricsEnabled, setIsLiveMetricsEnabled] = useState(true);
+  const [liveMetricsInterval, setLiveMetricsInterval] = useState<'1s' | '5s'>('1s');
+
   useEffect(() => {
-    if (!autoRefreshEnabled) return;
+    if (!autoRefreshEnabled && !isLiveMetricsEnabled) return;
+    const intervalMs = isLiveMetricsEnabled ? (liveMetricsInterval === '1s' ? 1000 : 5000) : 3000;
     const interval = setInterval(() => {
       setRefreshKey((k) => k + 1);
-    }, 3000);
+    }, intervalMs);
     return () => clearInterval(interval);
-  }, [autoRefreshEnabled]);
+  }, [autoRefreshEnabled, isLiveMetricsEnabled, liveMetricsInterval]);
 
   const queryResult = useMemo(() => {
     const _tick = refreshKey;
@@ -763,6 +767,18 @@ export default function App() {
       setInitialBaselineLatency(queryResult.executionTimeMs);
     }
   }, [flags.batchEagerLoading, queryResult.executionTimeMs, initialBaselineLatency]);
+
+  const handleResetSessionStatistics = () => {
+    setTrendHistory([]);
+    setInitialBaselineLatency(queryResult.executionTimeMs);
+    setProactiveToast({
+      title: '🔄 Session Statistics Reset',
+      message: 'Current session trend history cleared and baseline latency recalibrated to current execution time.',
+      flagToEnable: 'batchEagerLoading',
+      flagName: 'Batch Eager Loading'
+    });
+    setTimeout(() => setProactiveToast(null), 4000);
+  };
 
   const [customLatencyThreshold, setCustomLatencyThreshold] = useState<number>(() => {
     try {
@@ -1779,7 +1795,11 @@ export default function App() {
           <div
             id="banner-batch-eager-loading-latency"
             data-testid="banner-batch-eager-loading-latency"
-            className="p-4 bg-gradient-to-r from-rose-900 via-rose-950 to-amber-950 text-white rounded-2xl border-2 border-rose-500 shadow-2xl flex flex-col md:flex-row md:items-center justify-between gap-4 animate-fadeIn relative z-40 ring-4 ring-rose-500/20"
+            className={`p-4 bg-gradient-to-r from-rose-900 via-rose-950 to-amber-950 text-white rounded-2xl border-2 shadow-2xl flex flex-col md:flex-row md:items-center justify-between gap-4 animate-slideDown relative z-40 transition-all ${
+              isBannerPinned
+                ? 'border-rose-400 ring-4 ring-rose-500/50 shadow-rose-950/80 animate-banner-pinned-glow'
+                : 'border-rose-500 ring-4 ring-rose-500/20'
+            }`}
           >
             <div className="flex items-start md:items-center gap-3.5 w-full">
               <div className="p-2.5 bg-rose-600 text-white rounded-xl shadow-md shrink-0 animate-pulse mt-0.5 md:mt-0">
@@ -1813,6 +1833,59 @@ export default function App() {
                   <span className="font-mono text-[11px] bg-rose-600 text-white px-2.5 py-0.5 rounded-full font-bold uppercase shadow-xs">
                     Latency: {queryResult.executionTimeMs.toFixed(1)} ms (&gt; {customLatencyThreshold}ms threshold)
                   </span>
+                  {/* Live Metrics Auto-Refresh Toggle Switch */}
+                  <div
+                    id="banner-live-metrics-controls"
+                    data-testid="banner-live-metrics-controls"
+                    className="flex items-center gap-1.5 bg-zinc-950/70 px-2.5 py-1 rounded-xl border border-rose-500/30 text-xs font-mono shrink-0"
+                  >
+                    <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        id="toggle-live-metrics-banner"
+                        data-testid="toggle-live-metrics-banner"
+                        checked={isLiveMetricsEnabled}
+                        onChange={(e) => setIsLiveMetricsEnabled(e.target.checked)}
+                        className="w-3.5 h-3.5 accent-emerald-500 rounded cursor-pointer"
+                      />
+                      <span className="text-[11px] font-bold text-zinc-300 flex items-center gap-1">
+                        <span className={`w-1.5 h-1.5 rounded-full ${isLiveMetricsEnabled ? 'bg-emerald-400 animate-ping' : 'bg-zinc-500'}`} />
+                        Live Metrics
+                      </span>
+                    </label>
+                    {isLiveMetricsEnabled && (
+                      <div className="flex items-center bg-zinc-900 rounded-lg p-0.5 border border-zinc-700 ml-1">
+                        <button
+                          type="button"
+                          id="btn-live-interval-1s"
+                          data-testid="btn-live-interval-1s"
+                          onClick={() => setLiveMetricsInterval('1s')}
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition-colors cursor-pointer ${
+                            liveMetricsInterval === '1s'
+                              ? 'bg-emerald-600 text-white shadow-xs'
+                              : 'text-zinc-400 hover:text-zinc-200'
+                          }`}
+                          title="Update metrics every 1 second (Real-time)"
+                        >
+                          Real-time (1s)
+                        </button>
+                        <button
+                          type="button"
+                          id="btn-live-interval-5s"
+                          data-testid="btn-live-interval-5s"
+                          onClick={() => setLiveMetricsInterval('5s')}
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition-colors cursor-pointer ${
+                            liveMetricsInterval === '5s'
+                              ? 'bg-indigo-600 text-white shadow-xs'
+                              : 'text-zinc-400 hover:text-zinc-200'
+                          }`}
+                          title="Update metrics every 5 seconds (Steady)"
+                        >
+                          Steady (5s)
+                        </button>
+                      </div>
+                    )}
+                  </div>
                   <div className="flex items-center gap-1.5 bg-zinc-950/60 px-2 py-0.5 rounded-xl border border-rose-500/30 text-xs font-mono">
                     <span className="text-zinc-400 text-[10px]">Threshold:</span>
                     <input
@@ -1997,6 +2070,17 @@ export default function App() {
                   >
                     <span>View Serialization Logs →</span>
                   </button>
+                  <button
+                    type="button"
+                    id="btn-reset-session-statistics"
+                    data-testid="btn-reset-session-statistics"
+                    onClick={handleResetSessionStatistics}
+                    className="text-xs font-mono font-semibold text-amber-300 hover:text-white underline underline-offset-4 cursor-pointer transition-colors flex items-center gap-1"
+                    title="Clear current session trendHistory and reset baseline latency for debugging new bottleneck patterns"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5 text-amber-300" />
+                    <span>Reset Session Statistics</span>
+                  </button>
                 </div>
                 {showExportLogHistoryPanel && (
                   <div
@@ -2054,7 +2138,7 @@ export default function App() {
                         data-testid={`btn-redownload-report-${item.id}`}
                         onClick={() => handleReDownloadHistoryItem(item)}
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-zinc-950/90 hover:bg-zinc-900 border border-zinc-800 hover:border-indigo-400/60 rounded-xl text-xs font-mono text-zinc-200 hover:text-white transition-all cursor-pointer shrink-0 shadow-xs group"
-                        title={`Re-download report: ${item.title} (${item.timeFormatted})`}
+                        title={`Re-download report: ${item.title}\n• Timestamp: ${item.timeFormatted}\n• Record Count: ${item.recordCount || 50000} records\n• Execution Time: ${item.executionTimeMs || 245.0}ms`}
                       >
                         <FileText className="w-3.5 h-3.5 text-indigo-400 group-hover:scale-110 transition-transform shrink-0" />
                         <span className="font-bold truncate max-w-[160px]">{item.title}</span>
@@ -2291,13 +2375,19 @@ export default function App() {
                     flagName: 'Batch Eager Loading'
                   });
                 }}
-                className={`px-3.5 py-2 font-extrabold text-xs rounded-xl shadow-lg cursor-pointer transition-all flex items-center gap-1.5 border hover:scale-105 active:scale-95 ${
+                className={`relative px-3.5 py-2 font-extrabold text-xs rounded-xl shadow-lg cursor-pointer transition-all flex items-center gap-1.5 border hover:scale-105 active:scale-95 ${
                   showN1CascadeOverlay
                     ? 'bg-gradient-to-r from-rose-600 via-purple-600 to-indigo-600 text-white border-rose-400 ring-4 ring-rose-400/40 animate-pulse shadow-rose-950/80'
                     : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border-zinc-700'
                 }`}
                 title="Toggle dedicated N+1 Cascade Visualization overlay on VirtualizedTable"
               >
+                {showN1CascadeOverlay && (
+                  <span className="absolute -top-1 -right-1 flex h-3 w-3 pointer-events-none">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-3 w-3 bg-rose-500"></span>
+                  </span>
+                )}
                 <Layers className={`w-3.5 h-3.5 ${showN1CascadeOverlay ? 'text-white' : 'text-indigo-300'}`} />
                 <span>N+1 Cascade Overlay</span>
               </button>
@@ -2414,7 +2504,7 @@ export default function App() {
                       ? 'bg-emerald-900/80 border-emerald-400 text-white scale-110 shadow-lg shadow-emerald-950/80 ring-2 ring-emerald-400/50'
                       : 'text-indigo-300 hover:text-white hover:bg-indigo-800/40 border-transparent hover:border-indigo-400/50'
                   }`}
-                  title={`System Bottleneck State Preview:\n• Current Latency: ${queryResult.executionTimeMs.toFixed(1)}ms | N+1 Cascade: ${queryResult.activeQueries || 101} queries\n• Click to stringify diagnostics for external reporting`}
+                  title={`System Bottleneck State Preview:\n• Current Latency: ${queryResult.executionTimeMs.toFixed(1)}ms | N+1 Cascade: ${queryResult.activeQueries || 101} queries\n• Click to copy diagnostic payload containing serialized N+1 cascade metadata useful for support tickets`}
                 >
                   {isCopyingLogs && (
                     <svg className="absolute inset-0 w-full h-full -rotate-90 pointer-events-none" viewBox="0 0 36 36">
@@ -2786,6 +2876,106 @@ export default function App() {
         filenamePrefix="database_query_records"
         onConfirmExport={handleConfirmAppExport}
       />
+
+      {/* Configure CSV Columns Modal */}
+      {isCsvColumnsModalOpen && (
+        <div
+          id="modal-configure-csv-columns"
+          data-testid="modal-configure-csv-columns"
+          className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn font-sans"
+        >
+          <div className="bg-zinc-900 rounded-2xl shadow-2xl max-w-md w-full overflow-hidden border border-zinc-700 text-white animate-scaleUp">
+            <div className="p-5 bg-gradient-to-r from-zinc-900 via-indigo-950 to-zinc-900 flex items-center justify-between border-b border-zinc-800">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-indigo-600/30 border border-indigo-500/40 rounded-xl text-indigo-300">
+                  <Sliders className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-white tracking-wide">Configure CSV Diagnostic Columns</h3>
+                  <p className="text-xs text-zinc-400">Select which metrics are included in generated CSV reports</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCsvColumnsModalOpen(false)}
+                className="text-zinc-400 hover:text-white cursor-pointer p-1"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="p-5 space-y-3">
+              {[
+                { id: 'latency', label: 'Execution Latency (ms)', desc: 'Query execution time and thresholds' },
+                { id: 'totalRecords', label: 'Total Records Scanned', desc: 'Row count scanned during execution' },
+                { id: 'cacheHit', label: 'Cache Hit Status', desc: 'Whether query result was served from cache' },
+                { id: 'queryCount', label: 'N+1 Cascaded Query Count', desc: 'Active child queries and cascade count' },
+                { id: 'errorStatus', label: 'System Error Status', desc: 'Active system errors or simulated faults' },
+                { id: 'flags', label: 'Optimization Flags State', desc: 'Boolean state of all engine flags' }
+              ].map((item) => {
+                const isSelected = selectedCsvMetrics.includes(item.id);
+                return (
+                  <label
+                    key={item.id}
+                    className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
+                      isSelected
+                        ? 'bg-indigo-950/60 border-indigo-500/60 text-white shadow-xs'
+                        : 'bg-zinc-950/50 border-zinc-800 hover:border-zinc-700 text-zinc-300'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={(e) => {
+                        const next = e.target.checked
+                          ? [...selectedCsvMetrics, item.id]
+                          : selectedCsvMetrics.filter((m) => m !== item.id);
+                        setSelectedCsvMetrics(next);
+                        try {
+                          localStorage.setItem('enterprise_diagnostic_csv_columns', JSON.stringify(next));
+                        } catch (err) {
+                          console.error(err);
+                        }
+                      }}
+                      className="mt-0.5 w-4 h-4 accent-indigo-500 rounded cursor-pointer"
+                    />
+                    <div className="space-y-0.5">
+                      <span className="font-bold text-xs block text-white">{item.label}</span>
+                      <span className="text-[11px] text-zinc-400 block leading-tight">{item.desc}</span>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+            <div className="p-4 bg-zinc-950 border-t border-zinc-800 flex items-center justify-between">
+              <div className="text-[11px] font-mono text-zinc-400">
+                {selectedCsvMetrics.length} of 6 metric columns selected
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const all = ['latency', 'totalRecords', 'cacheHit', 'queryCount', 'errorStatus', 'flags'];
+                    setSelectedCsvMetrics(all);
+                    try {
+                      localStorage.setItem('enterprise_diagnostic_csv_columns', JSON.stringify(all));
+                    } catch (err) {}
+                  }}
+                  className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs rounded-xl font-bold cursor-pointer transition-colors"
+                >
+                  Select All
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsCsvColumnsModalOpen(false)}
+                  className="px-4 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-extrabold text-xs rounded-xl shadow cursor-pointer transition-all"
+                >
+                  Save & Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <DiagnosticExportHistoryModal
         isOpen={isExportHistoryModalOpen}
