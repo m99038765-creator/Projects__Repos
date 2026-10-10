@@ -23,7 +23,7 @@ import { VisualQueryBuilderModal } from './components/VisualQueryBuilderModal';
 import { LatencyLegend } from './components/LatencyLegend';
 import { HeatmapIntensityScale } from './components/HeatmapIntensityScale';
 import { ExportPreviewModal } from './components/ExportPreviewModal';
-import { AlertTriangle, X, Flame, Zap, BellOff, TrendingUp, FileText, Loader, Sparkles, Search, Clipboard, Pin, RotateCcw, FileSpreadsheet, Camera, FileJson, Brain, Layers, Sliders, Settings, Info } from 'lucide-react';
+import { AlertTriangle, X, Flame, Zap, BellOff, TrendingUp, FileText, Loader, Sparkles, Search, Clipboard, Pin, RotateCcw, FileSpreadsheet, Camera, FileJson, Brain, Layers, Sliders, Settings, Info, RefreshCw } from 'lucide-react';
 import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
 import {
   exportRecords,
@@ -1450,6 +1450,98 @@ export default function App() {
     }
   }, [trendHistory, flags, extendedAlertThresholds, notificationsMuted, movingAverageTrendWindow, anomalyThresholdSlope]);
 
+  const [isRefreshingBanner, setIsRefreshingBanner] = useState(false);
+
+  const handleRefreshBannerMetrics = () => {
+    setIsRefreshingBanner(true);
+    // 1. Force recalculation of queryResult & dbStats
+    setRefreshKey((k) => k + 1);
+
+    // 2. Clear last anomaly check ref so the anomaly observer can re-evaluate freshly
+    lastAnomalyPointIdRef.current = null;
+
+    // 3. Create a fresh LatencyTrendPoint with current metrics
+    const now = Date.now();
+    const timeFormatted = new Date(now).toLocaleTimeString();
+    const currentLat = queryResult.executionTimeMs;
+
+    const newPoint: LatencyTrendPoint = {
+      id: `pt-refresh-${now}-${Math.random().toString(36).slice(2, 6)}`,
+      timestamp: now,
+      timeFormatted,
+      executionTimeMs: currentLat,
+      rowsScanned: queryResult.totalCount || 50000,
+      activeQueriesCount: queryResult.activeQueries || (!flags.batchEagerLoading ? 101 : 1),
+      cacheHit: queryResult.cacheHit,
+      flags: { ...flags },
+      deltaMs: 0,
+      triggerEvent: 'Immediate Banner Metric Refresh',
+      simulatedError: queryResult.simulatedError || null
+    };
+
+    setTrendHistory((prev) => [...prev.slice(-49), newPoint]);
+
+    // 4. Immediately re-evaluate anomaly detection logic
+    const windowSec = movingAverageTrendWindow || extendedAlertThresholds.anomalyTrendWindowSec || 15;
+    const windowStartMs = now - windowSec * 1000;
+    const points = [...trendHistory, newPoint].filter((pt) => pt.timestamp >= windowStartMs);
+
+    if (points.length >= 2) {
+      const firstPoint = points[0];
+      const latencyDelta = newPoint.executionTimeMs - firstPoint.executionTimeMs;
+      const timeDeltaSec = Math.max(1, (newPoint.timestamp - firstPoint.timestamp) / 1000);
+      const slopePerSec = latencyDelta / timeDeltaSec;
+
+      if (slopePerSec >= anomalyThresholdSlope && latencyDelta > 10) {
+        let recommendation = '';
+        let flagToEnable: keyof OptimizationFlags | undefined = undefined;
+        let flagName: string | undefined = undefined;
+
+        if (!flags.btreeIndexing) {
+          flagToEnable = 'btreeIndexing';
+          flagName = 'B-Tree Indexing';
+          recommendation = `Sequential table scans compounding over the ${windowSec}s trend window. Enable B-Tree Indexing to flatten query execution slope.`;
+        } else if (!flags.batchEagerLoading) {
+          flagToEnable = 'batchEagerLoading';
+          flagName = 'Batch Eager Loading';
+          recommendation = `N+1 query cascades accelerating over the ${windowSec}s window. Enable Batch Eager Loading to consolidate roundtrips.`;
+        } else if (!flags.queryCaching) {
+          flagToEnable = 'queryCaching';
+          flagName = 'Query Caching';
+          recommendation = `Frequent repetitive query hits over the ${windowSec}s trend window. Enable Query Caching.`;
+        } else {
+          recommendation = `Workload contention escalating over the ${windowSec}s monitoring window. Inspect Database Bottleneck Heatmap.`;
+        }
+
+        const p0 = firstPoint.executionTimeMs;
+        const p1 = points[Math.floor(points.length / 2)].executionTimeMs;
+        const p2 = newPoint.executionTimeMs;
+
+        setAnomalyToast({
+          id: newPoint.id,
+          title: 'Performance Anomaly',
+          message: `Steep latency acceleration (+${slopePerSec.toFixed(1)}ms/sec over ${windowSec}s window: ${p0.toFixed(1)}ms → ${p2.toFixed(1)}ms).`,
+          slope: slopePerSec,
+          points: [p0, p1, p2],
+          recommendation,
+          flagToEnable,
+          flagName
+        });
+      }
+    }
+
+    setProactiveToast({
+      title: '🔄 Metrics Refreshed',
+      message: `Query execution metrics refreshed (${currentLat.toFixed(1)}ms) and anomaly detection re-evaluated.`,
+      flagToEnable: 'batchEagerLoading',
+      flagName: 'Batch Eager Loading'
+    });
+
+    setTimeout(() => {
+      setIsRefreshingBanner(false);
+    }, 600);
+  };
+
   // Revert on Stable Watcher: Automatically reverts Quick Fix if latency remains below 100ms for more than 2 minutes (120s)
   const stableStartTimeRef = useRef<number | null>(null);
 
@@ -1886,6 +1978,19 @@ export default function App() {
                       </div>
                     )}
                   </div>
+                  {/* Immediate Manual Refresh Button */}
+                  <button
+                    type="button"
+                    id="btn-refresh-banner-metrics"
+                    data-testid="btn-refresh-banner-metrics"
+                    onClick={handleRefreshBannerMetrics}
+                    disabled={isRefreshingBanner}
+                    className="flex items-center gap-1.5 px-3 py-1 bg-zinc-950/80 hover:bg-zinc-900 text-rose-300 hover:text-white border border-rose-500/40 hover:border-rose-400 rounded-xl text-xs font-mono font-bold shadow-xs cursor-pointer transition-all active:scale-95 disabled:opacity-60 shrink-0"
+                    title="Immediately update banner metrics and re-trigger anomaly detection logic"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 text-rose-400 ${isRefreshingBanner ? 'animate-spin' : ''}`} />
+                    <span>Refresh</span>
+                  </button>
                   <div className="flex items-center gap-1.5 bg-zinc-950/60 px-2 py-0.5 rounded-xl border border-rose-500/30 text-xs font-mono">
                     <span className="text-zinc-400 text-[10px]">Threshold:</span>
                     <input
@@ -2080,6 +2185,18 @@ export default function App() {
                   >
                     <RotateCcw className="w-3.5 h-3.5 text-amber-300" />
                     <span>Reset Session Statistics</span>
+                  </button>
+                  <button
+                    type="button"
+                    id="link-refresh-banner-metrics"
+                    data-testid="link-refresh-banner-metrics"
+                    onClick={handleRefreshBannerMetrics}
+                    disabled={isRefreshingBanner}
+                    className="text-xs font-mono font-semibold text-rose-300 hover:text-white underline underline-offset-4 cursor-pointer transition-colors flex items-center gap-1 disabled:opacity-60"
+                    title="Immediately update banner metrics and re-trigger anomaly detection logic"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 text-rose-300 ${isRefreshingBanner ? 'animate-spin' : ''}`} />
+                    <span>Refresh Metrics & Anomaly Scan</span>
                   </button>
                 </div>
                 {showExportLogHistoryPanel && (
