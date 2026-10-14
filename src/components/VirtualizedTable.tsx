@@ -4335,12 +4335,12 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                 const isN1Exceeded = showN1CascadeOverlay && (recordItemCount > 5 || !safeFlags.batchEagerLoading);
                 const isFocusedRow = Boolean(focusedRecordIds && focusedRecordIds.includes(rec.id));
                 if (isFocusedRow) {
-                  heatmapRowStyle.backgroundColor = 'rgba(244, 63, 94, 0.28)';
-                  heatmapRowBg = 'border-2 border-rose-500 ring-4 ring-rose-500/60 shadow-xl animate-pulse';
+                  heatmapRowStyle.backgroundColor = undefined;
+                  heatmapRowBg = 'border-2 border-rose-500 ring-4 ring-rose-500/60 shadow-xl animate-row-breathing';
                   heatmapBadgeClass = 'bg-gradient-to-r from-rose-600 via-pink-600 to-amber-600 text-white font-extrabold animate-bounce';
                 } else if (isN1Exceeded) {
-                  heatmapRowStyle.backgroundColor = 'rgba(244, 63, 94, 0.22)';
-                  heatmapRowBg = 'border-2 border-rose-500 ring-4 ring-rose-500/30 shadow-lg';
+                  heatmapRowStyle.backgroundColor = undefined;
+                  heatmapRowBg = 'border-2 border-rose-500 ring-4 ring-rose-500/30 shadow-lg animate-row-breathing';
                   heatmapBadgeClass = 'bg-gradient-to-r from-rose-600 to-purple-600 text-white font-extrabold animate-pulse';
                 }
 

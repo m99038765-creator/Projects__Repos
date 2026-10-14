@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
-    "gcp-build": "true"
+    "gcp-build": "vite build"
   },
   "engines": {
     "node": "22.x"

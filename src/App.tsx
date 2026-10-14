@@ -23,7 +23,7 @@ import { VisualQueryBuilderModal } from './components/VisualQueryBuilderModal';
 import { LatencyLegend } from './components/LatencyLegend';
 import { HeatmapIntensityScale } from './components/HeatmapIntensityScale';
 import { ExportPreviewModal } from './components/ExportPreviewModal';
-import { AlertTriangle, X, Flame, Zap, BellOff, TrendingUp, FileText, Loader, Sparkles, Search, Clipboard, Pin, RotateCcw, FileSpreadsheet, Camera, FileJson, Brain, Layers, Sliders, Settings, Info, RefreshCw, Target } from 'lucide-react';
+import { AlertTriangle, X, Flame, Zap, BellOff, TrendingUp, FileText, Loader, Sparkles, Search, Clipboard, Pin, RotateCcw, FileSpreadsheet, Camera, FileJson, Brain, Layers, Sliders, Settings, Info, RefreshCw, Target, Share2 } from 'lucide-react';
 import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
 import {
   exportRecords,
@@ -926,6 +926,8 @@ export default function App() {
     setIsHistoricalDataTapeOpen(true);
   };
 
+  const [autoExpandLogId, setAutoExpandLogId] = useState<string | null>(null);
+
   const handleViewSerializationLogs = () => {
     setActiveView('grid');
     setTimeout(() => {
@@ -934,6 +936,7 @@ export default function App() {
       ) || (serializationLogs || [])[0];
 
       if (problematicLog) {
+        setAutoExpandLogId(problematicLog.id);
         const entryEl = document.getElementById(`serialization-log-entry-${problematicLog.id}`);
         if (entryEl) {
           entryEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1267,6 +1270,41 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [shortcutToast]);
 
+  // Parse deep-link snapshot hash on mount
+  useEffect(() => {
+    try {
+      const hash = window.location.hash;
+      if (hash && hash.includes('snapshot=')) {
+        const b64 = hash.split('snapshot=')[1];
+        if (b64) {
+          const jsonStr = decodeURIComponent(escape(atob(b64)));
+          const snapshot = JSON.parse(jsonStr);
+          if (snapshot) {
+            if (snapshot.flags) {
+              setFlags(prev => ({ ...prev, ...snapshot.flags }));
+            }
+            if (snapshot.thresholds) {
+              if (snapshot.thresholds.customLatencyThreshold) setCustomLatencyThreshold(snapshot.thresholds.customLatencyThreshold);
+              if (snapshot.thresholds.movingAverageTrendWindow) setMovingAverageTrendWindow(snapshot.thresholds.movingAverageTrendWindow);
+              if (snapshot.thresholds.anomalyThresholdSlope) setAnomalyThresholdSlope(snapshot.thresholds.anomalyThresholdSlope);
+            }
+            if (snapshot.trendHistory && Array.isArray(snapshot.trendHistory)) {
+              setTrendHistory(snapshot.trendHistory);
+            }
+            setProactiveToast({
+              title: '📥 Snapshot Loaded from Deep-Link',
+              description: 'Successfully restored bottleneck flags, anomaly thresholds, and trend state from developer snapshot.',
+              type: 'success'
+            });
+            setTimeout(() => setProactiveToast(null), 5000);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Failed to parse snapshot hash:', err);
+    }
+  }, []);
+
   const handleRunOptimizationSequence = () => {
     if (isSimulatingSequence) return;
     setIsSimulatingSequence(true);
@@ -1351,6 +1389,14 @@ export default function App() {
   const [mutationThreshold] = useState<number>(100);
   const [activeView, setActiveView] = useState<'grid' | 'trends' | 'comparison' | 'schema'>('grid');
   const [serializationLogs, setSerializationLogs] = useState<SerializationLogEntry[]>(() => getInitialSerializationLogs());
+  const n1LogsCount = (serializationLogs || []).filter(l =>
+    String(l.type).toUpperCase().includes('N+1') ||
+    String(l.type).toUpperCase().includes('N_PLUS_ONE') ||
+    String(l.severity).toUpperCase().includes('N+1') ||
+    String(l.message).toUpperCase().includes('N+1') ||
+    String(l.details?.cause || '').toUpperCase().includes('N+1') ||
+    String(l.details?.triggerSource || '').toUpperCase().includes('N+1')
+  ).length;
   const [dataTapeEntries, setDataTapeEntries] = useState<DataTapeEntry[]>(() => getInitialDataTapeEntries());
   const [selectedTapeEntry, setSelectedTapeEntry] = useState<DataTapeEntry | null>(null);
 
@@ -2298,6 +2344,21 @@ export default function App() {
                   </button>
                   <button
                     type="button"
+                    id="badge-n1-logs-count"
+                    data-testid="badge-n1-logs-count"
+                    onClick={() => {
+                      setShowOnlyN1Logs(true);
+                      handleViewSerializationLogs();
+                    }}
+                    className="font-mono text-[11px] bg-rose-950/90 border border-rose-500/60 text-rose-200 px-3 py-1 rounded-xl font-bold flex items-center gap-1.5 hover:bg-rose-900 hover:text-white transition-colors cursor-pointer shadow-xs"
+                    title="Click to filter and scroll directly to active N+1 cascade log entries in SerializationErrorLogPanel"
+                  >
+                    <Layers className="w-3.5 h-3.5 text-rose-400" />
+                    <span>Active N+1 Cascade Logs: <strong className="text-white underline">{n1LogsCount}</strong></span>
+                    <span className="text-rose-400">→</span>
+                  </button>
+                  <button
+                    type="button"
                     id="btn-view-serialization-logs"
                     data-testid="btn-view-serialization-logs"
                     onClick={handleViewSerializationLogs}
@@ -2305,6 +2366,42 @@ export default function App() {
                     title="View serialization and N+1 cascade error logs"
                   >
                     <span>View Serialization Logs →</span>
+                  </button>
+                  <button
+                    type="button"
+                    id="btn-share-snapshot"
+                    data-testid="btn-share-snapshot"
+                    onClick={() => {
+                      const snapshotData = {
+                        timestamp: Date.now(),
+                        flags,
+                        thresholds: {
+                          customLatencyThreshold,
+                          movingAverageTrendWindow,
+                          anomalyThresholdSlope,
+                        },
+                        metrics: {
+                          executionTimeMs: queryResult.executionTimeMs,
+                          n1LogsCount,
+                        },
+                        trendHistory: (trendHistory || []).slice(-30),
+                      };
+                      const jsonStr = JSON.stringify(snapshotData);
+                      const b64 = btoa(unescape(encodeURIComponent(jsonStr)));
+                      const shareUrl = `${window.location.origin}${window.location.pathname}#snapshot=${b64}`;
+                      navigator.clipboard?.writeText(shareUrl);
+                      setProactiveToast({
+                        title: '🔗 Shareable Snapshot Generated!',
+                        description: 'Deep-link URL containing current flags, anomaly thresholds, and recent trend history copied to clipboard.',
+                        type: 'success'
+                      });
+                      setTimeout(() => setProactiveToast(null), 4000);
+                    }}
+                    className="text-xs font-mono font-semibold text-rose-300 hover:text-white underline underline-offset-4 cursor-pointer transition-colors flex items-center gap-1"
+                    title="Generate shareable base64 deep-link snapshot URL containing flags, anomaly thresholds, and trend history"
+                  >
+                    <Share2 className="w-3.5 h-3.5 text-rose-300" />
+                    <span>Share Snapshot</span>
                   </button>
                   <button
                     type="button"
@@ -2851,17 +2948,46 @@ export default function App() {
                 </div>
               </div>
               <div className="flex items-center">
-                <button
-                  type="button"
-                  id="btn-configure-csv-columns-banner"
-                  data-testid="btn-configure-csv-columns-banner"
-                  onClick={() => setIsCsvColumnsModalOpen(true)}
-                  className="px-2.5 py-1.5 bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-500/40 hover:border-indigo-400 text-indigo-200 hover:text-white rounded-xl text-xs font-mono font-semibold transition-all duration-200 cursor-pointer flex items-center gap-1.5 shadow-xs ml-1"
-                  title="Configure CSV Columns: Select which specific metrics are included in generated diagnostic CSV reports"
-                >
-                  <Sliders className="w-3.5 h-3.5 text-indigo-300" />
-                  <span>Configure CSV Columns</span>
-                </button>
+                <div className="relative group inline-flex items-center ml-1">
+                  <button
+                    type="button"
+                    id="btn-configure-csv-columns-banner"
+                    data-testid="btn-configure-csv-columns-banner"
+                    onClick={() => setIsCsvColumnsModalOpen(true)}
+                    className="px-2.5 py-1.5 bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-500/40 hover:border-indigo-400 text-indigo-200 hover:text-white rounded-xl text-xs font-mono font-semibold transition-all duration-200 cursor-pointer flex items-center gap-1.5 shadow-xs"
+                    title={`Configure CSV Columns (${selectedCsvMetrics.length}/6 selected):\n• ${selectedCsvMetrics.map(id => ({latency:'Execution Latency', totalRecords:'Total Records', cacheHit:'Cache Hit', queryCount:'N+1 Query Count', errorStatus:'Error Status', flags:'Flags State'}[id] || id)).join('\n• ')}`}
+                  >
+                    <Sliders className="w-3.5 h-3.5 text-indigo-300" />
+                    <span>Configure CSV Columns</span>
+                  </button>
+                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 p-3 bg-zinc-900 border border-indigo-500/60 text-indigo-100 text-xs font-sans rounded-xl shadow-2xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 leading-relaxed">
+                    <div className="font-extrabold text-indigo-300 mb-1 flex items-center justify-between">
+                      <span>Export CSV Columns ({selectedCsvMetrics.length}/6)</span>
+                    </div>
+                    <ul className="space-y-0.5 text-[11px] text-zinc-300">
+                      {selectedCsvMetrics.length > 0 ? (
+                        selectedCsvMetrics.map(id => {
+                          const nameMap: Record<string, string> = {
+                            latency: 'Execution Latency (ms)',
+                            totalRecords: 'Total Records Scanned',
+                            cacheHit: 'Cache Hit Status',
+                            queryCount: 'N+1 Cascaded Query Count',
+                            errorStatus: 'System Error Status',
+                            flags: 'Optimization Flags State'
+                          };
+                          return (
+                            <li key={id} className="flex items-center gap-1.5">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                              <span>{nameMap[id] || id}</span>
+                            </li>
+                          );
+                        })
+                      ) : (
+                        <li className="text-zinc-500 italic">No columns selected</li>
+                      )}
+                    </ul>
+                  </div>
+                </div>
                 <button
                   type="button"
                   id="btn-export-diagnostics-csv-banner"
@@ -3083,6 +3209,7 @@ export default function App() {
                 records={queryResult.records}
                 flags={flags}
                 showOnlyN1Logs={showOnlyN1Logs}
+                autoExpandLogId={autoExpandLogId}
               />
             </div>
           </>
@@ -3237,6 +3364,46 @@ export default function App() {
               >
                 ✕
               </button>
+            </div>
+            <div className="px-5 py-3 bg-zinc-950/80 border-b border-zinc-800 flex items-center justify-between text-xs">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-zinc-300">Quick Preset:</span>
+              </div>
+              <select
+                id="modal-select-csv-preset"
+                data-testid="modal-select-csv-preset"
+                aria-label="CSV Column Presets"
+                value={(() => {
+                  const isSameSet = (a: string[], b: string[]) => a.length === b.length && a.every(x => b.includes(x));
+                  if (isSameSet(selectedCsvMetrics, ['latency', 'totalRecords', 'cacheHit', 'queryCount', 'errorStatus', 'flags'])) return 'full';
+                  if (isSameSet(selectedCsvMetrics, ['latency', 'flags'])) return 'minimal';
+                  if (isSameSet(selectedCsvMetrics, ['latency', 'queryCount', 'flags'])) return 'performance';
+                  return '';
+                })()}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  let next: string[] = [];
+                  if (val === 'full') {
+                    next = ['latency', 'totalRecords', 'cacheHit', 'queryCount', 'errorStatus', 'flags'];
+                  } else if (val === 'minimal') {
+                    next = ['latency', 'flags'];
+                  } else if (val === 'performance') {
+                    next = ['latency', 'queryCount', 'flags'];
+                  }
+                  if (next.length > 0) {
+                    setSelectedCsvMetrics(next);
+                    try {
+                      localStorage.setItem('enterprise_diagnostic_csv_columns', JSON.stringify(next));
+                    } catch (err) {}
+                  }
+                }}
+                className="bg-zinc-900 border border-zinc-700 hover:border-indigo-500 focus:border-indigo-500 rounded-lg px-2.5 py-1 text-xs text-zinc-200 cursor-pointer shadow-xs"
+              >
+                <option value="" disabled>Select preset...</option>
+                <option value="full">Full Diagnostics (all columns)</option>
+                <option value="minimal">Minimal (latency and flags only)</option>
+                <option value="performance">Performance Focus (latency, query count, and flags)</option>
+              </select>
             </div>
             <div className="p-5 space-y-3">
               {[
