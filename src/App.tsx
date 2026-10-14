@@ -23,7 +23,7 @@ import { VisualQueryBuilderModal } from './components/VisualQueryBuilderModal';
 import { LatencyLegend } from './components/LatencyLegend';
 import { HeatmapIntensityScale } from './components/HeatmapIntensityScale';
 import { ExportPreviewModal } from './components/ExportPreviewModal';
-import { AlertTriangle, X, Flame, Zap, BellOff, TrendingUp, FileText, Loader, Sparkles, Search, Clipboard, Pin, RotateCcw, FileSpreadsheet, Camera, FileJson, Brain, Layers, Sliders, Settings, Info, RefreshCw, Target, Share2 } from 'lucide-react';
+import { AlertTriangle, X, Flame, Zap, BellOff, TrendingUp, FileText, Loader, Sparkles, Search, Clipboard, Pin, RotateCcw, FileSpreadsheet, Camera, FileJson, Brain, Layers, Sliders, Settings, Info, RefreshCw, Target, Share2, CheckCircle2, ArrowRight } from 'lucide-react';
 import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
 import {
   exportRecords,
@@ -640,6 +640,82 @@ export default function App() {
   const dbStats = useMemo(() => getDatabaseStats(), [queryResult]);
   const fps = useFpsMonitor();
 
+  // Predicted performance latency reduction for Quick Fix All based on current system flags
+  const quickFixPrediction = useMemo(() => {
+    const currentLatency = queryResult.executionTimeMs;
+    const pageSizeCount = queryResult.records?.length || 100;
+
+    const contributions: {
+      flag: keyof OptimizationFlags;
+      name: string;
+      isActive: boolean;
+      predictedReductionMs: number;
+      impactDescription: string;
+    }[] = [
+      {
+        flag: 'batchEagerLoading',
+        name: 'Batch Eager Loading',
+        isActive: Boolean(flags.batchEagerLoading),
+        predictedReductionMs: !flags.batchEagerLoading ? Number(((pageSizeCount + 1) * 4.2).toFixed(1)) : 0,
+        impactDescription: `Replaces ${pageSizeCount} synchronous N+1 queries with a single batched join (saves ~4.2ms/query)`
+      },
+      {
+        flag: 'btreeIndexing',
+        name: 'B-Tree Composite Indexing',
+        isActive: Boolean(flags.btreeIndexing),
+        predictedReductionMs: !flags.btreeIndexing ? 48.5 : 0,
+        impactDescription: 'Bypasses full 50,000-record sequential table scan in favor of direct O(log N) index lookups'
+      },
+      {
+        flag: 'queryCaching',
+        name: 'Query Caching (LRU)',
+        isActive: Boolean(flags.queryCaching),
+        predictedReductionMs: !flags.queryCaching ? 1.5 : 0,
+        impactDescription: 'Enables sub-millisecond (0.15ms) cached plan and memory retrieval on repeat queries'
+      },
+      {
+        flag: 'virtualizedDOM',
+        name: 'Virtualized DOM',
+        isActive: Boolean(flags.virtualizedDOM),
+        predictedReductionMs: !flags.virtualizedDOM ? 140 : 0,
+        impactDescription: 'Eliminates DOM layout thrashing by rendering only the visible viewport window (~25 rows)'
+      },
+      {
+        flag: 'deferredRendering',
+        name: 'Deferred Rendering',
+        isActive: Boolean(flags.deferredRendering),
+        predictedReductionMs: !flags.deferredRendering ? 35 : 0,
+        impactDescription: 'Smooths React priority render transitions to protect 60 FPS frame budgets'
+      }
+    ];
+
+    const dbLatencySavings = contributions
+      .filter((c) => !c.isActive && (c.flag === 'batchEagerLoading' || c.flag === 'btreeIndexing' || c.flag === 'queryCaching'))
+      .reduce((acc, c) => acc + c.predictedReductionMs, 0);
+
+    const totalLatencySavings = contributions
+      .filter((c) => !c.isActive)
+      .reduce((acc, c) => acc + c.predictedReductionMs, 0);
+
+    const predictedPostDbLatencyMs = Math.max(0.15, Number((currentLatency - dbLatencySavings).toFixed(1)));
+    const predictedReductionMs = Math.max(0, Number((currentLatency - predictedPostDbLatencyMs).toFixed(1)));
+    const predictedReductionPct = currentLatency > 0
+      ? Math.min(99.9, Number(((predictedReductionMs / currentLatency) * 100).toFixed(1)))
+      : 0;
+
+    const inactiveFlagsCount = contributions.filter((c) => !c.isActive).length;
+
+    return {
+      currentLatency,
+      predictedPostDbLatencyMs,
+      predictedReductionMs,
+      predictedReductionPct,
+      totalLatencySavings,
+      inactiveFlagsCount,
+      contributions
+    };
+  }, [flags, queryResult.executionTimeMs, queryResult.records?.length]);
+
   // Modals state
   const [isBenchmarkModalOpen, setIsBenchmarkModalOpen] = useState(false);
   const [isPerformanceTrendsOpen, setIsPerformanceTrendsOpen] = useState(false);
@@ -820,6 +896,7 @@ export default function App() {
     }
   });
   const [isCsvColumnsModalOpen, setIsCsvColumnsModalOpen] = useState(false);
+  const [csvColumnsSearchQuery, setCsvColumnsSearchQuery] = useState('');
   const [isBannerPinned, setIsBannerPinned] = useState<boolean>(() => {
     try {
       return localStorage.getItem('enterprise_batch_banner_pinned') === 'true';
@@ -940,9 +1017,9 @@ export default function App() {
         const entryEl = document.getElementById(`serialization-log-entry-${problematicLog.id}`);
         if (entryEl) {
           entryEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          entryEl.classList.add('ring-4', 'ring-rose-500', 'bg-rose-100/90', 'transition-all', 'duration-700');
+          entryEl.classList.add('animate-panel-shake', 'animate-panel-glow', 'ring-4', 'ring-rose-500', 'bg-rose-100/90', 'transition-all', 'duration-700');
           setTimeout(() => {
-            entryEl.classList.remove('ring-4', 'ring-rose-500', 'bg-rose-100/90');
+            entryEl.classList.remove('animate-panel-shake', 'animate-panel-glow', 'ring-4', 'ring-rose-500', 'bg-rose-100/90');
           }, 2500);
           return;
         }
@@ -951,6 +1028,10 @@ export default function App() {
       const el = document.getElementById('serialization-error-log-section');
       if (el) {
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.classList.add('animate-panel-shake', 'animate-panel-glow', 'ring-4', 'ring-rose-500', 'transition-all', 'duration-700');
+        setTimeout(() => {
+          el.classList.remove('animate-panel-shake', 'animate-panel-glow', 'ring-4', 'ring-rose-500');
+        }, 2500);
       }
     }, 150);
   };
@@ -1397,6 +1478,25 @@ export default function App() {
     String(l.details?.cause || '').toUpperCase().includes('N+1') ||
     String(l.details?.triggerSource || '').toUpperCase().includes('N+1')
   ).length;
+
+  const [n1LogsHistory, setN1LogsHistory] = useState<{ timestamp: number; count: number }[]>(() => [
+    { timestamp: Date.now() - 14 * 60 * 1000, count: Math.max(0, n1LogsCount - 4) },
+    { timestamp: Date.now() - 10 * 60 * 1000, count: Math.max(0, n1LogsCount - 3) },
+    { timestamp: Date.now() - 5 * 60 * 1000, count: Math.max(0, n1LogsCount - 1) },
+    { timestamp: Date.now(), count: n1LogsCount }
+  ]);
+
+  useEffect(() => {
+    const now = Date.now();
+    setN1LogsHistory(prev => {
+      const filtered = prev.filter(p => now - p.timestamp <= 15 * 60 * 1000);
+      const last = filtered[filtered.length - 1];
+      if (!last || Math.abs(last.count - n1LogsCount) > 0 || now - last.timestamp > 60 * 1000) {
+        return [...filtered, { timestamp: now, count: n1LogsCount }].slice(-30);
+      }
+      return filtered;
+    });
+  }, [n1LogsCount]);
   const [dataTapeEntries, setDataTapeEntries] = useState<DataTapeEntry[]>(() => getInitialDataTapeEntries());
   const [selectedTapeEntry, setSelectedTapeEntry] = useState<DataTapeEntry | null>(null);
 
@@ -2055,6 +2155,14 @@ export default function App() {
           <div
             id="banner-batch-eager-loading-latency"
             data-testid="banner-batch-eager-loading-latency"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if ((e.ctrlKey || e.metaKey) && (e.key === 'n' || e.key === 'N')) {
+                e.preventDefault();
+                setShowOnlyN1Logs(true);
+                handleViewSerializationLogs();
+              }
+            }}
             className={`p-4 bg-gradient-to-r from-rose-900 via-rose-950 to-amber-950 text-white rounded-2xl border-2 shadow-2xl flex flex-col md:flex-row md:items-center justify-between gap-4 animate-slideDown relative z-40 transition-all ${
               isBannerPinned
                 ? 'border-rose-400 ring-4 ring-rose-500/50 shadow-rose-950/80 animate-banner-pinned-glow'
@@ -2351,12 +2459,44 @@ export default function App() {
                       handleViewSerializationLogs();
                     }}
                     className="font-mono text-[11px] bg-rose-950/90 border border-rose-500/60 text-rose-200 px-3 py-1 rounded-xl font-bold flex items-center gap-1.5 hover:bg-rose-900 hover:text-white transition-colors cursor-pointer shadow-xs"
-                    title="Click to filter and scroll directly to active N+1 cascade log entries in SerializationErrorLogPanel"
+                    title="Click or press Ctrl+N while banner is focused to filter and scroll directly to active N+1 cascade log entries"
                   >
                     <Layers className="w-3.5 h-3.5 text-rose-400" />
                     <span>Active N+1 Cascade Logs: <strong className="text-white underline">{n1LogsCount}</strong></span>
                     <span className="text-rose-400">→</span>
+                    <kbd className="px-1.5 py-0.2 bg-rose-900 border border-rose-500 rounded text-[10px] text-rose-200 ml-1">Ctrl+N</kbd>
                   </button>
+                  <div
+                    id="sparkline-n1-logs-trend"
+                    data-testid="sparkline-n1-logs-trend"
+                    className="flex items-center gap-1.5 bg-rose-950/80 px-2.5 py-1 rounded-xl border border-rose-500/40 shrink-0 font-mono text-[10px] text-rose-300"
+                    title="N+1 Cascade Frequency Growth over the last 15 minutes"
+                  >
+                    <span>15m Trend:</span>
+                    <svg width={56} height={18} className="overflow-visible">
+                      {(() => {
+                        const history = (n1LogsHistory || []).filter(p => Date.now() - p.timestamp <= 15 * 60 * 1000);
+                        const values = history.length >= 2 ? history.map(p => p.count) : [Math.max(0, n1LogsCount - 2), n1LogsCount];
+                        const min = Math.min(...values);
+                        const max = Math.max(...values, min + 1);
+                        const coords = values.map((v, i) => {
+                          const x = (i / (values.length - 1)) * 48;
+                          const y = 16 - ((v - min) / (max - min || 1)) * 12 - 2;
+                          return `${x.toFixed(1)},${y.toFixed(1)}`;
+                        }).join(' ');
+                        return (
+                          <polyline
+                            fill="none"
+                            stroke="#f43f5e"
+                            strokeWidth="1.75"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            points={coords}
+                          />
+                        );
+                      })()}
+                    </svg>
+                  </div>
                   <button
                     type="button"
                     id="btn-view-serialization-logs"
@@ -2627,17 +2767,122 @@ export default function App() {
                 </div>
               )}
 
-              <button
-                type="button"
-                id="btn-quick-fix-all-banner"
-                data-testid="btn-quick-fix-all-banner"
-                onClick={handleQuickFixAll}
-                className="px-3.5 py-2 bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-600 hover:from-emerald-400 hover:to-teal-400 text-zinc-950 font-extrabold text-xs rounded-xl shadow-lg cursor-pointer transition-all flex items-center gap-1.5 border border-emerald-300 hover:scale-105 active:scale-95 shadow-emerald-950/50"
-                title="Automatically enable all optimization flags for immediate resolution"
-              >
-                <Sparkles className="w-3.5 h-3.5 fill-zinc-950 text-zinc-950" />
-                <span>Quick Fix All</span>
-              </button>
+              <div className="relative group inline-block">
+                <button
+                  type="button"
+                  id="btn-quick-fix-all-banner"
+                  data-testid="btn-quick-fix-all-banner"
+                  onClick={handleQuickFixAll}
+                  aria-describedby="tooltip-quick-fix-all-banner"
+                  className="px-3.5 py-2 bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-600 hover:from-emerald-400 hover:to-teal-400 text-zinc-950 font-extrabold text-xs rounded-xl shadow-lg cursor-pointer transition-all flex items-center gap-1.5 border border-emerald-300 hover:scale-105 active:scale-95 shadow-emerald-950/50"
+                  title={`Quick Fix All: Predicts ▼ ${quickFixPrediction.predictedReductionMs.toFixed(1)}ms (${quickFixPrediction.predictedReductionPct.toFixed(1)}% faster) latency reduction based on current system flags (${quickFixPrediction.inactiveFlagsCount} inactive flag(s))`}
+                >
+                  <Sparkles className="w-3.5 h-3.5 fill-zinc-950 text-zinc-950" />
+                  <span>Quick Fix All</span>
+                </button>
+
+                {/* Descriptive Tooltip Outlining Predicted Performance Latency Reduction */}
+                <div
+                  id="tooltip-quick-fix-all-banner"
+                  data-testid="tooltip-quick-fix-all-banner"
+                  role="tooltip"
+                  className="absolute top-full right-0 sm:left-1/2 sm:-translate-x-1/2 sm:right-auto mt-2.5 w-84 sm:w-96 z-50 pointer-events-none opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-all duration-200 ease-out transform group-hover:translate-y-0 translate-y-1 invisible group-hover:visible group-focus-within:visible shadow-2xl"
+                >
+                  <div className="bg-zinc-950/95 backdrop-blur-md text-white rounded-2xl p-4 shadow-2xl border border-emerald-500/40 flex flex-col gap-3 font-sans ring-4 ring-emerald-500/10">
+                    {/* Top pointer arrow */}
+                    <div className="absolute -top-1.5 right-6 sm:left-1/2 sm:-translate-x-1/2 sm:right-auto w-3 h-3 bg-zinc-950 border-t border-l border-emerald-500/40 rotate-45" />
+
+                    {/* Header */}
+                    <div className="flex items-center justify-between gap-2 border-b border-zinc-800/80 pb-2">
+                      <div className="flex items-center gap-1.5">
+                        <div className="p-1 bg-emerald-500/20 text-emerald-400 rounded-md">
+                          <Sparkles className="w-3.5 h-3.5 text-emerald-300" />
+                        </div>
+                        <span className="font-extrabold text-xs text-zinc-100 tracking-wide">
+                          Quick Fix All • Latency Prediction
+                        </span>
+                      </div>
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-600/50 font-bold">
+                        {quickFixPrediction.inactiveFlagsCount > 0 ? `${quickFixPrediction.inactiveFlagsCount} Inactive Flag${quickFixPrediction.inactiveFlagsCount > 1 ? 's' : ''}` : 'Fully Optimized'}
+                      </span>
+                    </div>
+
+                    {/* Latency Reduction Summary Card */}
+                    <div className="bg-zinc-900/90 rounded-xl p-3 border border-zinc-800 flex items-center justify-between gap-2">
+                      <div className="flex flex-col">
+                        <span className="text-[10px] uppercase font-mono tracking-wider text-zinc-400">Current</span>
+                        <span className="text-sm font-mono font-bold text-rose-400">
+                          {quickFixPrediction.currentLatency.toFixed(1)}ms
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1 text-zinc-500">
+                        <ArrowRight className="w-3.5 h-3.5 text-emerald-400" />
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="text-[10px] uppercase font-mono tracking-wider text-zinc-400">Predicted</span>
+                        <span className="text-sm font-mono font-bold text-emerald-400">
+                          {quickFixPrediction.predictedPostDbLatencyMs.toFixed(1)}ms
+                        </span>
+                      </div>
+                      <div className="flex flex-col items-end">
+                        <span className="text-[10px] uppercase font-mono tracking-wider text-zinc-400">Predicted Reduction</span>
+                        <span className="text-xs font-mono font-black text-emerald-300 bg-emerald-950/80 px-2 py-0.5 rounded-lg border border-emerald-500/40">
+                          ▼ {quickFixPrediction.predictedReductionMs.toFixed(1)}ms (-{quickFixPrediction.predictedReductionPct.toFixed(1)}%)
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Flag-by-flag Breakdown */}
+                    <div className="space-y-1.5 text-left">
+                      <div className="text-[11px] font-bold text-zinc-300 flex items-center justify-between">
+                        <span>Predicted Reduction by System Flag:</span>
+                        <span className="text-[10px] font-mono text-zinc-500">Latency Gain</span>
+                      </div>
+                      <div className="space-y-1">
+                        {quickFixPrediction.contributions.map((item) => (
+                          <div
+                            key={item.flag}
+                            className={`p-2 rounded-lg border text-xs flex flex-col gap-0.5 transition-colors ${
+                              !item.isActive
+                                ? 'bg-zinc-900/80 border-emerald-500/30'
+                                : 'bg-zinc-900/30 border-zinc-800/60 opacity-60'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-semibold text-zinc-200 flex items-center gap-1.5">
+                                {!item.isActive ? (
+                                  <Zap className="w-3 h-3 text-amber-400 shrink-0" />
+                                ) : (
+                                  <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
+                                )}
+                                <span>{item.name}</span>
+                              </span>
+                              {!item.isActive ? (
+                                <span className="font-mono text-[11px] font-bold text-emerald-300 bg-emerald-950/90 px-1.5 py-0.2 rounded border border-emerald-600/40 shrink-0">
+                                  ▼ ~{item.predictedReductionMs.toFixed(1)}ms
+                                </span>
+                              ) : (
+                                <span className="font-mono text-[10px] text-zinc-400 shrink-0">
+                                  Active
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[10px] text-zinc-400 leading-tight pl-4.5">
+                              {item.impactDescription}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Action Prompt */}
+                    <div className="pt-1 border-t border-zinc-800/80 flex items-center justify-between text-[10px] font-mono text-zinc-400">
+                      <span>Click Quick Fix All to apply</span>
+                      <span className="text-emerald-400 font-bold">Immediate Resolution</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
               {(() => {
                 const isBatchMostImpactful = !flags.batchEagerLoading;
                 return (
@@ -3405,7 +3650,62 @@ export default function App() {
                 <option value="performance">Performance Focus (latency, query count, and flags)</option>
               </select>
             </div>
-            <div className="p-5 space-y-3">
+            <div className="px-5 py-3 bg-zinc-950/40 border-b border-zinc-800 flex items-center gap-2">
+              <Search className="w-4 h-4 text-zinc-400 shrink-0" />
+              <input
+                type="text"
+                id="input-search-csv-columns"
+                data-testid="input-search-csv-columns"
+                placeholder="Search metric columns..."
+                value={csvColumnsSearchQuery}
+                onChange={(e) => setCsvColumnsSearchQuery(e.target.value)}
+                className="w-full bg-transparent text-xs text-white placeholder-zinc-500 focus:outline-none font-mono"
+              />
+              {csvColumnsSearchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setCsvColumnsSearchQuery('')}
+                  className="text-zinc-400 hover:text-white text-xs cursor-pointer px-1"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+            <div className="px-5 py-2.5 bg-zinc-950/60 border-b border-zinc-800 flex items-center justify-between text-xs">
+              <span className="font-mono text-[11px] text-zinc-400">Bulk Operations:</span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  id="btn-csv-select-all"
+                  data-testid="btn-csv-select-all"
+                  onClick={() => {
+                    const all = ['latency', 'totalRecords', 'cacheHit', 'queryCount', 'errorStatus', 'flags'];
+                    setSelectedCsvMetrics(all);
+                    try {
+                      localStorage.setItem('enterprise_diagnostic_csv_columns', JSON.stringify(all));
+                    } catch (err) {}
+                  }}
+                  className="px-2.5 py-1 bg-indigo-950/80 hover:bg-indigo-900 text-indigo-200 border border-indigo-500/50 rounded-lg text-[11px] font-bold cursor-pointer transition-colors shadow-xs"
+                >
+                  Select All
+                </button>
+                <button
+                  type="button"
+                  id="btn-csv-deselect-all"
+                  data-testid="btn-csv-deselect-all"
+                  onClick={() => {
+                    setSelectedCsvMetrics([]);
+                    try {
+                      localStorage.setItem('enterprise_diagnostic_csv_columns', JSON.stringify([]));
+                    } catch (err) {}
+                  }}
+                  className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 rounded-lg text-[11px] font-bold cursor-pointer transition-colors shadow-xs"
+                >
+                  Deselect All
+                </button>
+              </div>
+            </div>
+            <div className="p-5 space-y-3 max-h-[300px] overflow-y-auto">
               {[
                 { id: 'latency', label: 'Execution Latency (ms)', desc: 'Query execution time and thresholds' },
                 { id: 'totalRecords', label: 'Total Records Scanned', desc: 'Row count scanned during execution' },
@@ -3413,40 +3713,62 @@ export default function App() {
                 { id: 'queryCount', label: 'N+1 Cascaded Query Count', desc: 'Active child queries and cascade count' },
                 { id: 'errorStatus', label: 'System Error Status', desc: 'Active system errors or simulated faults' },
                 { id: 'flags', label: 'Optimization Flags State', desc: 'Boolean state of all engine flags' }
-              ].map((item) => {
-                const isSelected = selectedCsvMetrics.includes(item.id);
-                return (
-                  <label
-                    key={item.id}
-                    className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
-                      isSelected
-                        ? 'bg-indigo-950/60 border-indigo-500/60 text-white shadow-xs'
-                        : 'bg-zinc-950/50 border-zinc-800 hover:border-zinc-700 text-zinc-300'
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={isSelected}
-                      onChange={(e) => {
-                        const next = e.target.checked
-                          ? [...selectedCsvMetrics, item.id]
-                          : selectedCsvMetrics.filter((m) => m !== item.id);
-                        setSelectedCsvMetrics(next);
-                        try {
-                          localStorage.setItem('enterprise_diagnostic_csv_columns', JSON.stringify(next));
-                        } catch (err) {
-                          console.error(err);
-                        }
-                      }}
-                      className="mt-0.5 w-4 h-4 accent-indigo-500 rounded cursor-pointer"
-                    />
-                    <div className="space-y-0.5">
-                      <span className="font-bold text-xs block text-white">{item.label}</span>
-                      <span className="text-[11px] text-zinc-400 block leading-tight">{item.desc}</span>
-                    </div>
-                  </label>
-                );
-              })}
+              ]
+                .filter((item) => {
+                  if (!csvColumnsSearchQuery.trim()) return true;
+                  const q = csvColumnsSearchQuery.toLowerCase().trim();
+                  return item.label.toLowerCase().includes(q) || item.desc.toLowerCase().includes(q) || item.id.toLowerCase().includes(q);
+                })
+                .map((item) => {
+                  const isSelected = selectedCsvMetrics.includes(item.id);
+                  return (
+                    <label
+                      key={item.id}
+                      className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
+                        isSelected
+                          ? 'bg-indigo-950/60 border-indigo-500/60 text-white shadow-xs'
+                          : 'bg-zinc-950/50 border-zinc-800 hover:border-zinc-700 text-zinc-300'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={(e) => {
+                          const next = e.target.checked
+                            ? [...selectedCsvMetrics, item.id]
+                            : selectedCsvMetrics.filter((m) => m !== item.id);
+                          setSelectedCsvMetrics(next);
+                          try {
+                            localStorage.setItem('enterprise_diagnostic_csv_columns', JSON.stringify(next));
+                          } catch (err) {
+                            console.error(err);
+                          }
+                        }}
+                        className="mt-0.5 w-4 h-4 accent-indigo-500 rounded cursor-pointer"
+                      />
+                      <div className="space-y-0.5">
+                        <span className="font-bold text-xs block text-white">{item.label}</span>
+                        <span className="text-[11px] text-zinc-400 block leading-tight">{item.desc}</span>
+                      </div>
+                    </label>
+                  );
+                })}
+              {[
+                { id: 'latency', label: 'Execution Latency (ms)', desc: 'Query execution time and thresholds' },
+                { id: 'totalRecords', label: 'Total Records Scanned', desc: 'Row count scanned during execution' },
+                { id: 'cacheHit', label: 'Cache Hit Status', desc: 'Whether query result was served from cache' },
+                { id: 'queryCount', label: 'N+1 Cascaded Query Count', desc: 'Active child queries and cascade count' },
+                { id: 'errorStatus', label: 'System Error Status', desc: 'Active system errors or simulated faults' },
+                { id: 'flags', label: 'Optimization Flags State', desc: 'Boolean state of all engine flags' }
+              ].filter((item) => {
+                if (!csvColumnsSearchQuery.trim()) return true;
+                const q = csvColumnsSearchQuery.toLowerCase().trim();
+                return item.label.toLowerCase().includes(q) || item.desc.toLowerCase().includes(q) || item.id.toLowerCase().includes(q);
+              }).length === 0 && (
+                <div className="py-6 text-center text-zinc-500 text-xs font-mono">
+                  No metric columns matching "{csvColumnsSearchQuery}"
+                </div>
+              )}
             </div>
             <div className="p-4 bg-zinc-950 border-t border-zinc-800 flex items-center justify-between">
               <div className="text-[11px] font-mono text-zinc-400">

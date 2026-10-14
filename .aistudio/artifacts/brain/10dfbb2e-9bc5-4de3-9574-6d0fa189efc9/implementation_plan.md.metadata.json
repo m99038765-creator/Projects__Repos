@@ -1,0 +1,6 @@
+{
+  "summary": "Implementation plan for adding N+1 log count badge to latency alert banner with scroll interaction, and adding search input filtering to Configure CSV Columns modal.",
+  "updatedAt": "2026-10-14T09:56:38.559977732Z",
+  "requestFeedback": true,
+  "userFacing": true
+}
