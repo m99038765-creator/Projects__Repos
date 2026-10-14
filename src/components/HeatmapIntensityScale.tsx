@@ -55,9 +55,14 @@ export const HeatmapIntensityScale: React.FC<HeatmapIntensityScaleProps> = ({
           <span className="p-1 rounded-md bg-rose-500/20 text-rose-400 border border-rose-500/30">
             <Flame className="w-3.5 h-3.5" />
           </span>
-          <span className="font-extrabold text-[11px] tracking-wide text-zinc-100 uppercase">
-            Heatmap Intensity Scale
-          </span>
+          <div>
+            <span className="font-extrabold text-[11px] tracking-wide text-zinc-100 uppercase block">
+              Heatmap Intensity Scale
+            </span>
+            <span className="text-[9px] text-zinc-400 block font-sans">
+              Color gradient from low to high latency contribution
+            </span>
+          </div>
         </div>
 
         {currentLatencyMs !== undefined && currentTier && (
@@ -98,8 +103,10 @@ export const HeatmapIntensityScale: React.FC<HeatmapIntensityScaleProps> = ({
 
         {/* Continuous Color Gradient Bar */}
         <div
+          id="heatmap-intensity-gradient-bar"
+          data-testid="heatmap-intensity-gradient-bar"
           className="h-2.5 w-full rounded-full bg-gradient-to-r from-emerald-500 via-amber-400 via-orange-500 to-rose-600 shadow-inner ring-1 ring-white/10"
-          title="Latency gradient: Green (Low <50ms) to Red (High >150ms)"
+          title="Color gradient from low to high latency contribution: Green (Low <50ms) to Red (High >150ms)"
         />
 
         {/* Graduation Tick Marks */}

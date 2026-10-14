@@ -58,6 +58,7 @@ interface SerializationErrorLogPanelProps {
     btreeIndexing?: boolean;
     [key: string]: any;
   };
+  showOnlyN1Logs?: boolean;
 }
 
 const LIFECYCLE_STORAGE_KEY = 'perf_optimization_lifecycle_events_v1';
@@ -182,7 +183,8 @@ export const SerializationErrorLogPanel: React.FC<SerializationErrorLogPanelProp
   onClearLifecycleEvents,
   alertThresholdMs = 100,
   records = [],
-  flags = {}
+  flags = {},
+  showOnlyN1Logs = false
 }) => {
   const safeLogs = logs || [];
   const safeRecords = records || [];
@@ -306,9 +308,17 @@ export const SerializationErrorLogPanel: React.FC<SerializationErrorLogPanelProp
         (formatFilter === 'engine'
           ? log.format === 'engine' || log.format === 'query'
           : log.format === formatFilter);
-      return matchesSeverity && matchesFormat;
+      const isN1Log =
+        String(log.type).toUpperCase().includes('N+1') ||
+        String(log.type).toUpperCase().includes('N_PLUS_ONE') ||
+        String(log.severity).toUpperCase().includes('N+1') ||
+        String(log.message).toUpperCase().includes('N+1') ||
+        String(log.details?.cause || '').toUpperCase().includes('N+1') ||
+        String(log.details?.triggerSource || '').toUpperCase().includes('N+1');
+      const matchesN1 = !showOnlyN1Logs || isN1Log;
+      return matchesSeverity && matchesFormat && matchesN1;
     });
-  }, [safeLogs, severityFilter, formatFilter]);
+  }, [safeLogs, severityFilter, formatFilter, showOnlyN1Logs]);
 
   // Filtered entries for Optimization Lifecycle tab
   const filteredLifecycleEvents = useMemo(() => {

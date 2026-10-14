@@ -203,4 +203,23 @@
   animation: banner-pinned-glow 2s ease-in-out infinite;
 }
 
+@keyframes danger-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(225, 29, 72, 0.65), 0 0 10px rgba(225, 29, 72, 0.4);
+    transform: scale(1);
+    border-color: rgba(251, 113, 133, 0.9);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(225, 29, 72, 0), 0 0 18px rgba(225, 29, 72, 0.65);
+    transform: scale(1.03);
+    border-color: rgba(254, 205, 211, 1);
+  }
+}
+
+.animate-danger-pulse,
+.danger-pulse {
+  animation: danger-pulse 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+
 

@@ -220,7 +220,7 @@ export interface DataTapeEntry {
   payloadPreview: string; // Snippet preview for auditor inspection
 }
 
-export type SerializationLogSeverity = 'error' | 'warning' | 'anomaly';
+export type SerializationLogSeverity = 'error' | 'warning' | 'anomaly' | 'N+1';
 
 export type SerializationAnomalyType =
   | 'SERIALIZATION_EXCEPTION'
@@ -229,7 +229,9 @@ export type SerializationAnomalyType =
   | 'LATENCY_ANOMALY'
   | 'CPU_CONTENTION'
   | 'PAYLOAD_BLOAT'
-  | 'CORRUPTED_ENCODING';
+  | 'CORRUPTED_ENCODING'
+  | 'N+1_QUERY_CASCADE'
+  | 'N+1';
 
 export type SerializationLogFormat = 'csv' | 'json' | 'engine' | 'query';
 

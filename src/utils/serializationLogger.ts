@@ -232,6 +232,26 @@ export function getInitialSerializationLogs(): SerializationLogEntry[] {
 
   return [
     {
+      id: 'log-hist-n1-cascade',
+      timestamp: now - 45000,
+      timeFormatted: formatTime(45000),
+      severity: 'anomaly',
+      type: 'N+1_QUERY_CASCADE' as any,
+      format: 'query',
+      recordCount: 50000,
+      message: 'Critical N+1 Query Cascade: Fired 101 unbatched subqueries against line_items table, saturating database pool.',
+      details: {
+        throughputRowsPerSec: 1050,
+        baselineThroughput: 18000,
+        durationMs: 472.5,
+        baselineDurationMs: 12.4,
+        activeQueriesCount: 101,
+        cpuUsagePercent: 88,
+        cause: 'Disabled batchEagerLoading caused unbatched sequential roundtrips for each parent row (N+1 query cascade).',
+        triggerSource: 'PostgreSQL Relational Engine [N+1 STORM]'
+      }
+    },
+    {
       id: 'log-hist-1',
       timestamp: now - 110000,
       timeFormatted: formatTime(110000),

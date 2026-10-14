@@ -23,7 +23,7 @@ import { VisualQueryBuilderModal } from './components/VisualQueryBuilderModal';
 import { LatencyLegend } from './components/LatencyLegend';
 import { HeatmapIntensityScale } from './components/HeatmapIntensityScale';
 import { ExportPreviewModal } from './components/ExportPreviewModal';
-import { AlertTriangle, X, Flame, Zap, BellOff, TrendingUp, FileText, Loader, Sparkles, Search, Clipboard, Pin, RotateCcw, FileSpreadsheet, Camera, FileJson, Brain, Layers, Sliders, Settings, Info, RefreshCw } from 'lucide-react';
+import { AlertTriangle, X, Flame, Zap, BellOff, TrendingUp, FileText, Loader, Sparkles, Search, Clipboard, Pin, RotateCcw, FileSpreadsheet, Camera, FileJson, Brain, Layers, Sliders, Settings, Info, RefreshCw, Target } from 'lucide-react';
 import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
 import {
   exportRecords,
@@ -277,6 +277,23 @@ export default function App() {
     }
   });
 
+  const [showOnlyN1Logs, setShowOnlyN1Logs] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('enterprise_show_only_n1_logs') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const handleToggleShowOnlyN1Logs = (enabled: boolean) => {
+    setShowOnlyN1Logs(enabled);
+    try {
+      localStorage.setItem('enterprise_show_only_n1_logs', String(enabled));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   const handleToggleAutoResolveSpike = (enabled: boolean) => {
     setIsAutoResolveOnSpikeEnabled(enabled);
     try {
@@ -284,6 +301,35 @@ export default function App() {
     } catch (e) {
       console.error(e);
     }
+  };
+
+  const [isDelayedAutoFixEnabled, setIsDelayedAutoFixEnabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('enterprise_delayed_auto_fix_enabled') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const [consecutiveBreachCount, setConsecutiveBreachCount] = useState<number>(0);
+
+  const handleToggleDelayedAutoFix = (enabled: boolean) => {
+    setIsDelayedAutoFixEnabled(enabled);
+    setConsecutiveBreachCount(0);
+    try {
+      localStorage.setItem('enterprise_delayed_auto_fix_enabled', String(enabled));
+    } catch (e) {
+      console.error(e);
+    }
+    setProactiveToast({
+      title: enabled ? '⏱️ Delayed Auto-Fix Enabled' : 'Delayed Auto-Fix Disabled',
+      message: enabled
+        ? 'Waits for 3 consecutive breach events before automatically applying the recommended optimization, reducing noise from transient spikes.'
+        : 'Delayed Auto-Fix disabled.',
+      flagToEnable: 'batchEagerLoading',
+      flagName: 'Batch Eager Loading'
+    });
+    setTimeout(() => setProactiveToast(null), 3500);
   };
 
   const handleToggleRevertOnStable = (enabled: boolean) => {
@@ -297,6 +343,44 @@ export default function App() {
       flagToEnable: 'batchEagerLoading',
       flagName: 'Batch Eager Loading'
     });
+  };
+
+  const [focusedRecordIds, setFocusedRecordIds] = useState<string[]>([]);
+
+  const handleFocusAffectedItems = () => {
+    // 1. Identify first 5 records involved in N+1 cascade from queryResult.records
+    const cascadeRecords = (queryResult.records || []).slice(0, 5);
+    const affectedIds = cascadeRecords.map((r) => r.id);
+    setFocusedRecordIds(affectedIds);
+
+    // 2. Ensure N+1 cascade overlay is enabled for maximum visual clarity
+    setShowN1CascadeOverlay(true);
+
+    // 3. Smoothly scroll browser window to VirtualizedTable
+    const tableRoot = document.getElementById('virtualized-table-root');
+    if (tableRoot) {
+      tableRoot.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    // 4. Smoothly scroll table viewport to top to show first 5 records
+    const tableViewport = document.getElementById('virtualized-table-viewport');
+    if (tableViewport) {
+      tableViewport.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    // 5. Toast feedback
+    setProactiveToast({
+      title: '🎯 Focused First 5 N+1 Cascade Records',
+      message: `Scrolled VirtualizedTable to top 5 cascade records (${cascadeRecords.map(r => r.orderNumber).join(', ') || 'records 1-5'}) identified in serialization logs.`,
+      flagToEnable: 'batchEagerLoading',
+      flagName: 'Batch Eager Loading'
+    });
+    setTimeout(() => setProactiveToast(null), 4500);
+
+    // 6. Reset focus highlight after 7 seconds
+    setTimeout(() => {
+      setFocusedRecordIds([]);
+    }, 7000);
   };
 
   const handleExportPdfClick = async () => {
@@ -771,9 +855,10 @@ export default function App() {
   const handleResetSessionStatistics = () => {
     setTrendHistory([]);
     setInitialBaselineLatency(queryResult.executionTimeMs);
+    setConsecutiveBreachCount(0);
     setProactiveToast({
       title: '🔄 Session Statistics Reset',
-      message: 'Current session trend history cleared and baseline latency recalibrated to current execution time.',
+      message: 'Current session trend history cleared, consecutive breach counter reset, and baseline latency recalibrated to current execution time.',
       flagToEnable: 'batchEagerLoading',
       flagName: 'Batch Eager Loading'
     });
@@ -903,18 +988,55 @@ export default function App() {
     setIsBatchBannerDismissed(false);
   }, [flags.batchEagerLoading]);
 
+  const lastBreachEvalKeyRef = useRef<string>('');
+
   useEffect(() => {
-    if (!isBatchBannerDismissed && !flags.batchEagerLoading && queryResult.executionTimeMs > customLatencyThreshold && isAutoResolveOnSpikeEnabled) {
-      handleToggleFlag('batchEagerLoading');
-      setIsBatchBannerDismissed(true);
-      setProactiveToast({
-        title: '⚡ Auto-Resolved on Spike',
-        message: 'Latency threshold breached while Auto-Resolve on Spike was active. batchEagerLoading was automatically enabled.',
-        flagToEnable: 'batchEagerLoading',
-        flagName: 'Batch Eager Loading'
-      });
+    const isBreach = !flags.batchEagerLoading && queryResult.executionTimeMs > customLatencyThreshold;
+    const evalKey = `${refreshKey}_${flags.batchEagerLoading}_${isBreach ? 'breach' : 'ok'}_${isDelayedAutoFixEnabled}_${isAutoResolveOnSpikeEnabled}`;
+    if (lastBreachEvalKeyRef.current === evalKey) return;
+    lastBreachEvalKeyRef.current = evalKey;
+
+    if (isBreach) {
+      if (isDelayedAutoFixEnabled) {
+        setConsecutiveBreachCount((prev) => {
+          const nextCount = prev + 1;
+          if (nextCount >= 3) {
+            handleToggleFlag('batchEagerLoading');
+            setIsBatchBannerDismissed(true);
+            setProactiveToast({
+              title: '⚡ Delayed Auto-Fix Applied (3/3 Breaches)',
+              message: 'Confirmed persistent bottleneck over 3 consecutive breach events. Automatically applied recommended optimization (batchEagerLoading).',
+              flagToEnable: 'batchEagerLoading',
+              flagName: 'Batch Eager Loading'
+            });
+            setTimeout(() => setProactiveToast(null), 4000);
+            return 0;
+          } else {
+            setProactiveToast({
+              title: `⏱️ Delayed Auto-Fix: Breach ${nextCount}/3 Detected`,
+              message: `Waiting for 3 consecutive breach events before automatically applying optimization (${nextCount}/3). Transient spikes are filtered.`,
+              flagToEnable: 'batchEagerLoading',
+              flagName: 'Batch Eager Loading'
+            });
+            setTimeout(() => setProactiveToast(null), 3500);
+            return nextCount;
+          }
+        });
+      } else if (isAutoResolveOnSpikeEnabled && !isBatchBannerDismissed) {
+        handleToggleFlag('batchEagerLoading');
+        setIsBatchBannerDismissed(true);
+        setProactiveToast({
+          title: '⚡ Auto-Resolved on Spike',
+          message: 'Latency threshold breached while Auto-Resolve on Spike was active. batchEagerLoading was automatically enabled.',
+          flagToEnable: 'batchEagerLoading',
+          flagName: 'Batch Eager Loading'
+        });
+      }
+    } else {
+      // Latency is within normal threshold or batchEagerLoading is active: reset counter (filtering transient spikes)
+      setConsecutiveBreachCount(0);
     }
-  }, [queryResult.executionTimeMs, flags.batchEagerLoading, isBatchBannerDismissed, isAutoResolveOnSpikeEnabled, customLatencyThreshold]);
+  }, [refreshKey, queryResult.executionTimeMs, flags.batchEagerLoading, isBatchBannerDismissed, isAutoResolveOnSpikeEnabled, isDelayedAutoFixEnabled, customLatencyThreshold]);
 
   const handleToggleFlag = (key: keyof OptimizationFlags) => {
     setFlags((prev) => {
@@ -1922,8 +2044,16 @@ export default function App() {
                   <h3 className="font-extrabold text-sm text-white tracking-wide">
                     ⚠️ Critical Latency Alert: Batch Eager Loading Disabled
                   </h3>
-                  <span className="font-mono text-[11px] bg-rose-600 text-white px-2.5 py-0.5 rounded-full font-bold uppercase shadow-xs">
-                    Latency: {queryResult.executionTimeMs.toFixed(1)} ms (&gt; {customLatencyThreshold}ms threshold)
+                  <span
+                    id="banner-latency-value-display"
+                    data-testid="banner-latency-value-display"
+                    className={`font-mono text-[11px] text-white px-2.5 py-0.5 rounded-full font-bold uppercase shadow-xs border transition-all ${
+                      queryResult.executionTimeMs > customLatencyThreshold
+                        ? 'bg-rose-600 border-rose-400 animate-danger-pulse danger-pulse'
+                        : 'bg-zinc-800 border-zinc-700'
+                    }`}
+                  >
+                    Latency: <span className="font-extrabold">{queryResult.executionTimeMs.toFixed(1)} ms</span> (&gt; {customLatencyThreshold}ms threshold)
                   </span>
                   {/* Live Metrics Auto-Refresh Toggle Switch */}
                   <div
@@ -1981,8 +2111,9 @@ export default function App() {
                   {/* Immediate Manual Refresh Button */}
                   <button
                     type="button"
-                    id="btn-refresh-banner-metrics"
-                    data-testid="btn-refresh-banner-metrics"
+                    id="btn-refresh-banner"
+                    data-testid="btn-refresh-banner"
+                    data-alt-id="btn-refresh-banner-metrics"
                     onClick={handleRefreshBannerMetrics}
                     disabled={isRefreshingBanner}
                     className="flex items-center gap-1.5 px-3 py-1 bg-zinc-950/80 hover:bg-zinc-900 text-rose-300 hover:text-white border border-rose-500/40 hover:border-rose-400 rounded-xl text-xs font-mono font-bold shadow-xs cursor-pointer transition-all active:scale-95 disabled:opacity-60 shrink-0"
@@ -2148,7 +2279,7 @@ export default function App() {
                   </div>
                 </div>
                 <p className="text-xs text-rose-200/90 leading-relaxed max-w-3xl">
-                  Query latency has reached <strong className="text-white font-mono">{queryResult.executionTimeMs.toFixed(1)}ms</strong> (exceeding the 200ms threshold) because <strong className="text-amber-300 font-mono">batchEagerLoading</strong> is currently disabled, triggering an unbatched N+1 child query cascade across line item relationships.
+                  Query latency has reached <strong className={`font-mono transition-all ${queryResult.executionTimeMs > customLatencyThreshold ? 'text-rose-200 animate-danger-pulse danger-pulse px-1.5 py-0.5 rounded bg-rose-950/80 border border-rose-500/50 inline-block' : 'text-white'}`}>{queryResult.executionTimeMs.toFixed(1)}ms</strong> (exceeding the {customLatencyThreshold}ms threshold) because <strong className="text-amber-300 font-mono">batchEagerLoading</strong> is currently disabled, triggering an unbatched N+1 child query cascade across line item relationships.
                 </p>
                 <div className="flex items-center gap-3 mt-2 flex-wrap">
                   <span className="font-mono text-[11px] bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 px-2.5 py-0.5 rounded-full font-bold flex items-center gap-1 shadow-xs">
@@ -2248,19 +2379,23 @@ export default function App() {
                   </div>
                   <div className="flex items-center gap-2 overflow-x-auto whitespace-nowrap pb-1 scrollbar-thin max-w-full">
                     {pdfExportHistory.slice(0, 5).map((item) => (
-                      <button
-                        key={item.id}
-                        type="button"
-                        id={`btn-redownload-report-${item.id}`}
-                        data-testid={`btn-redownload-report-${item.id}`}
-                        onClick={() => handleReDownloadHistoryItem(item)}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-zinc-950/90 hover:bg-zinc-900 border border-zinc-800 hover:border-indigo-400/60 rounded-xl text-xs font-mono text-zinc-200 hover:text-white transition-all cursor-pointer shrink-0 shadow-xs group"
-                        title={`Re-download report: ${item.title}\n• Timestamp: ${item.timeFormatted}\n• Record Count: ${item.recordCount || 50000} records\n• Execution Time: ${item.executionTimeMs || 245.0}ms`}
-                      >
-                        <FileText className="w-3.5 h-3.5 text-indigo-400 group-hover:scale-110 transition-transform shrink-0" />
-                        <span className="font-bold truncate max-w-[160px]">{item.title}</span>
-                        <span className="text-[10px] text-zinc-400 shrink-0">({item.timeFormatted})</span>
-                      </button>
+                      <div key={item.id} className="relative group inline-block shrink-0">
+                        <button
+                          type="button"
+                          id={`btn-redownload-report-${item.id}`}
+                          data-testid={`btn-redownload-report-${item.id}`}
+                          onClick={() => handleReDownloadHistoryItem(item)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-zinc-950/90 hover:bg-zinc-900 border border-zinc-800 hover:border-indigo-400/60 rounded-xl text-xs font-mono text-zinc-200 hover:text-white transition-all cursor-pointer shrink-0 shadow-xs"
+                          title={`Re-download report: ${item.title}\n• Timestamp: ${item.timeFormatted}\n• Record Count: ${item.recordCount || 50000} records\n• Execution Time: ${typeof item.executionTimeMs === 'number' ? item.executionTimeMs.toFixed(1) : 245.0}ms`}
+                        >
+                          <FileText className="w-3.5 h-3.5 text-indigo-400 group-hover:scale-110 transition-transform shrink-0" />
+                          <span className="font-bold truncate max-w-[160px]">{item.title}</span>
+                          <span className="text-[10px] text-zinc-400 shrink-0">({item.timeFormatted})</span>
+                        </button>
+                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-max max-w-xs p-2 bg-zinc-900 border border-indigo-500/70 text-indigo-100 text-[11px] font-mono rounded-lg shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 whitespace-nowrap">
+                          📊 Records: <strong className="text-white font-bold">{item.recordCount || 50000}</strong> • ⚡ Exec Time: <strong className="text-emerald-400 font-bold">{typeof item.executionTimeMs === 'number' ? item.executionTimeMs.toFixed(1) : '245.0'}ms</strong>
+                        </div>
+                      </div>
                     ))}
                     {pdfExportHistory.length === 0 && (
                       <span className="text-xs text-zinc-400 font-mono italic px-1">No recent reports generated yet.</span>
@@ -2281,6 +2416,31 @@ export default function App() {
                 />
                 <span className="text-xs font-mono font-bold text-rose-200">Auto-Resolve on Spike</span>
               </label>
+              <label
+                className="flex items-center gap-2 cursor-pointer select-none bg-zinc-950/60 hover:bg-zinc-950/80 px-3 py-2 rounded-xl border border-amber-500/40 transition-colors"
+                title="Waits for 3 consecutive breach events before automatically applying the recommended optimization, reducing noise from transient spikes"
+              >
+                <input
+                  type="checkbox"
+                  id="toggle-delayed-auto-fix"
+                  data-testid="toggle-delayed-auto-fix"
+                  checked={isDelayedAutoFixEnabled}
+                  onChange={(e) => handleToggleDelayedAutoFix(e.target.checked)}
+                  className="w-4 h-4 accent-amber-500 rounded cursor-pointer"
+                />
+                <span className="text-xs font-mono font-bold text-amber-200 flex items-center gap-1.5">
+                  <span>Delayed Auto-Fix</span>
+                  {isDelayedAutoFixEnabled && (
+                    <span
+                      id="badge-delayed-auto-fix-count"
+                      data-testid="badge-delayed-auto-fix-count"
+                      className="px-1.5 py-0.2 rounded text-[10px] bg-amber-500/30 text-amber-200 border border-amber-400/40 font-mono font-bold"
+                    >
+                      {consecutiveBreachCount}/3 breaches
+                    </span>
+                  )}
+                </span>
+              </label>
               <label className="flex items-center gap-2 cursor-pointer select-none bg-zinc-950/60 hover:bg-zinc-950/80 px-3 py-2 rounded-xl border border-emerald-500/40 transition-colors">
                 <input
                   type="checkbox"
@@ -2291,6 +2451,33 @@ export default function App() {
                   className="w-4 h-4 accent-emerald-500 rounded cursor-pointer"
                 />
                 <span className="text-xs font-mono font-bold text-emerald-200">Revert on Stable (&lt;100ms for 2m)</span>
+              </label>
+              <label
+                className="flex items-center gap-2 cursor-pointer select-none bg-zinc-950/60 hover:bg-zinc-950/80 px-3 py-2 rounded-xl border border-indigo-500/40 transition-colors"
+                title="Filter the SerializationErrorLogPanel to display only logs marked with an N+1 type or severity"
+              >
+                <input
+                  type="checkbox"
+                  id="toggle-show-only-n1-logs"
+                  data-testid="toggle-show-only-n1-logs"
+                  checked={showOnlyN1Logs}
+                  onChange={(e) => {
+                    const next = e.target.checked;
+                    handleToggleShowOnlyN1Logs(next);
+                    setProactiveToast({
+                      title: next ? '🔍 Filter Active: N+1 Logs Only' : 'Filter Disabled: All Logs',
+                      message: next ? 'SerializationErrorLogPanel is now displaying only logs with N+1 type or severity.' : 'Displaying all serialization error logs.',
+                      flagToEnable: 'batchEagerLoading',
+                      flagName: 'Batch Eager Loading'
+                    });
+                    setTimeout(() => setProactiveToast(null), 3500);
+                  }}
+                  className="w-4 h-4 accent-indigo-500 rounded cursor-pointer"
+                />
+                <span className="text-xs font-mono font-bold text-indigo-200 flex items-center gap-1.5">
+                  <Layers className="w-3.5 h-3.5 text-indigo-400" />
+                  Show only N+1 Logs
+                </span>
               </label>
               <button
                 type="button"
@@ -2434,7 +2621,9 @@ export default function App() {
                 <button
                   type="button"
                   id="btn-enable-heatmap-overlay-banner"
-                  data-testid="btn-enable-heatmap-overlay-banner"
+                  data-testid="btn-enable-heatmap-overlay-banner btn-heatmap-overlay"
+                  data-action="heatmap-overlay"
+                  aria-expanded={showQueryIntensityOverlay}
                   onClick={() => {
                     const next = !showQueryIntensityOverlay;
                     setShowQueryIntensityOverlay(next);
@@ -2507,6 +2696,18 @@ export default function App() {
                 )}
                 <Layers className={`w-3.5 h-3.5 ${showN1CascadeOverlay ? 'text-white' : 'text-indigo-300'}`} />
                 <span>N+1 Cascade Overlay</span>
+              </button>
+              <button
+                type="button"
+                id="btn-focus-affected-items-banner"
+                data-testid="btn-focus-affected-items-banner"
+                data-action="focus-affected-items"
+                onClick={handleFocusAffectedItems}
+                className="px-3.5 py-2 bg-gradient-to-r from-rose-700 via-pink-700 to-rose-800 hover:from-rose-600 hover:to-pink-600 text-white font-extrabold text-xs rounded-xl shadow-lg cursor-pointer transition-all flex items-center gap-1.5 border border-rose-400/50 hover:scale-105 active:scale-95 shadow-rose-950/60"
+                title="Focus Affected Items: Automatically scrolls the VirtualizedTable to the first 5 records involved in the N+1 cascade identified in the serialization logs"
+              >
+                <Target className="w-3.5 h-3.5 text-rose-200" />
+                <span>Focus Affected Items</span>
               </button>
               <button
                 type="button"
@@ -2604,7 +2805,7 @@ export default function App() {
                   </button>
                 )}
               </div>
-              <div className="relative">
+              <div className="relative group inline-flex items-center">
                 {showCopyLogsToast && (
                   <div className="absolute -top-10 left-1/2 -translate-x-1/2 bg-zinc-900 border border-emerald-500 text-emerald-300 px-3 py-1 rounded-xl text-[11px] font-mono font-bold shadow-2xl animate-bounce whitespace-nowrap z-50 flex items-center gap-1.5">
                     <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
@@ -2621,7 +2822,7 @@ export default function App() {
                       ? 'bg-emerald-900/80 border-emerald-400 text-white scale-110 shadow-lg shadow-emerald-950/80 ring-2 ring-emerald-400/50'
                       : 'text-indigo-300 hover:text-white hover:bg-indigo-800/40 border-transparent hover:border-indigo-400/50'
                   }`}
-                  title={`System Bottleneck State Preview:\n• Current Latency: ${queryResult.executionTimeMs.toFixed(1)}ms | N+1 Cascade: ${queryResult.activeQueries || 101} queries\n• Click to copy diagnostic payload containing serialized N+1 cascade metadata useful for support tickets`}
+                  title="Copied diagnostic payload contains serialized N+1 cascade metadata useful for support tickets."
                 >
                   {isCopyingLogs && (
                     <svg className="absolute inset-0 w-full h-full -rotate-90 pointer-events-none" viewBox="0 0 36 36">
@@ -2645,6 +2846,11 @@ export default function App() {
                   )}
                   <Clipboard className={`w-4 h-4 transition-transform duration-300 relative z-10 ${isCopyingLogs ? 'scale-125 text-emerald-300 animate-pulse' : ''}`} />
                 </button>
+                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 p-2.5 bg-zinc-900 border border-indigo-500/60 text-indigo-100 text-xs font-sans rounded-xl shadow-2xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 text-center leading-relaxed">
+                  Copied diagnostic payload contains serialized N+1 cascade metadata useful for support tickets.
+                </div>
+              </div>
+              <div className="flex items-center">
                 <button
                   type="button"
                   id="btn-configure-csv-columns-banner"
@@ -2841,6 +3047,7 @@ export default function App() {
               showLatencyHeatmapProp={showLatencyHeatmap}
               onToggleLatencyHeatmap={setShowLatencyHeatmap}
               showN1CascadeOverlay={showN1CascadeOverlay}
+              focusedRecordIds={focusedRecordIds}
               onFixNPlusOne={() => setFlags((prev) => ({ ...prev, batchEagerLoading: true }))}
               onAutoOptimize={() => setFlags({
                 batchEagerLoading: true,
@@ -2856,7 +3063,17 @@ export default function App() {
 
             <div id="serialization-error-log-section">
               <SerializationErrorLogPanel
-                logs={serializationLogs}
+                logs={showOnlyN1Logs
+                  ? serializationLogs.filter(l =>
+                      String(l.type).toUpperCase().includes('N+1') ||
+                      String(l.type).toUpperCase().includes('N_PLUS_ONE') ||
+                      String(l.severity).toUpperCase().includes('N+1') ||
+                      String(l.message).toUpperCase().includes('N+1') ||
+                      String(l.details?.cause || '').toUpperCase().includes('N+1') ||
+                      String(l.details?.triggerSource || '').toUpperCase().includes('N+1')
+                    )
+                  : serializationLogs
+                }
                 onClearLogs={() => setSerializationLogs([])}
                 onDismissLog={(id) => setSerializationLogs((prev) => prev.filter((l) => l.id !== id))}
                 onSimulateFault={() => {}}
@@ -2865,6 +3082,7 @@ export default function App() {
                 alertThresholdMs={alertThresholdMs}
                 records={queryResult.records}
                 flags={flags}
+                showOnlyN1Logs={showOnlyN1Logs}
               />
             </div>
           </>

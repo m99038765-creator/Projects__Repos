@@ -50,7 +50,8 @@ import {
   Pin,
   ArrowUp,
   Layers,
-  Cpu
+  Cpu,
+  Target
 } from 'lucide-react';
 import {
   exportRecords,
@@ -118,6 +119,7 @@ interface VirtualizedTableProps {
   isLoading?: boolean;
   onSimulateHeavyFetch?: () => void;
   showN1CascadeOverlay?: boolean;
+  focusedRecordIds?: string[];
 }
 
 export interface LatencyHeatmapLayersState {
@@ -370,7 +372,8 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
   isLoading = false,
   onSimulateHeavyFetch,
   executionTimeMs = 0,
-  showN1CascadeOverlay = false
+  showN1CascadeOverlay = false,
+  focusedRecordIds = []
 }) => {
   const safeFlags: OptimizationFlags = {
     batchEagerLoading: true,
@@ -483,6 +486,14 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
   const [exportPreviewRecords, setExportPreviewRecords] = useState<TransactionRecord[]>([]);
   const [exportPreviewPrefix, setExportPreviewPrefix] = useState<string>('filtered_transactions');
   const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (focusedRecordIds && focusedRecordIds.length > 0) {
+      if (containerRef.current) {
+        containerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    }
+  }, [focusedRecordIds]);
   const [internalFormat, setInternalFormat] = useState<ExportFormat>(selectedExportFormat);
   const activeFormat = selectedExportFormat || internalFormat;
   const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false);
@@ -2021,7 +2032,11 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
   };
 
   return (
-    <div className="bg-white rounded-xl border border-zinc-200 shadow-xs overflow-hidden flex flex-col relative">
+    <div
+      id="virtualized-table-root"
+      data-testid="virtualized-table"
+      className="bg-white rounded-xl border border-zinc-200 shadow-xs overflow-hidden flex flex-col relative"
+    >
       {/* Fetch Completion Toast */}
       {fetchToast && (
         <div
@@ -4205,6 +4220,8 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
       {/* Scrollable Table Viewport */}
       <div
         ref={containerRef}
+        id="virtualized-table-viewport"
+        data-testid="virtualized-table-viewport"
         onScroll={onScroll}
         style={{ height: `${CONTAINER_HEIGHT}px` }}
         className="overflow-y-auto relative divide-y divide-zinc-100"
@@ -4316,7 +4333,12 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                 }
 
                 const isN1Exceeded = showN1CascadeOverlay && (recordItemCount > 5 || !safeFlags.batchEagerLoading);
-                if (isN1Exceeded) {
+                const isFocusedRow = Boolean(focusedRecordIds && focusedRecordIds.includes(rec.id));
+                if (isFocusedRow) {
+                  heatmapRowStyle.backgroundColor = 'rgba(244, 63, 94, 0.28)';
+                  heatmapRowBg = 'border-2 border-rose-500 ring-4 ring-rose-500/60 shadow-xl animate-pulse';
+                  heatmapBadgeClass = 'bg-gradient-to-r from-rose-600 via-pink-600 to-amber-600 text-white font-extrabold animate-bounce';
+                } else if (isN1Exceeded) {
                   heatmapRowStyle.backgroundColor = 'rgba(244, 63, 94, 0.22)';
                   heatmapRowBg = 'border-2 border-rose-500 ring-4 ring-rose-500/30 shadow-lg';
                   heatmapBadgeClass = 'bg-gradient-to-r from-rose-600 to-purple-600 text-white font-extrabold animate-pulse';
@@ -4331,6 +4353,8 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                       id={`row-${rec.id}`}
                       data-selected={isSelected}
                       aria-selected={isSelected}
+                      data-focused={isFocusedRow ? 'true' : undefined}
+                      data-testid={isFocusedRow ? `row-focused-n1-${rec.id}` : `row-${rec.id}`}
                       data-latency-tier={rowLatencyPulse.tier}
                       data-execution-time-ms={rowQueryLatencyMs}
                       onClick={() => setSelectedMetricsRecord(rec)}
@@ -4492,6 +4516,18 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                           >
                             {rec.orderNumber}
                           </span>
+
+                          {isFocusedRow && (
+                            <span
+                              id={`badge-focused-record-${rec.id}`}
+                              data-testid="badge-focused-n1-record"
+                              className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded font-mono font-extrabold text-[10px] bg-gradient-to-r from-rose-600 to-pink-600 text-white shadow-xs animate-bounce shrink-0 border border-rose-300"
+                              title="Record involved in unbatched N+1 cascade identified from serialization logs"
+                            >
+                              <Target className="w-3 h-3 text-rose-200" />
+                              <span>N+1 Target</span>
+                            </span>
+                          )}
 
                           {/* Small 'Insight' Tooltip Trigger Badge */}
                           <div className="relative inline-flex items-center" onClick={(e) => e.stopPropagation()}>
