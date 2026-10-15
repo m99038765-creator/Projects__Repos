@@ -12,6 +12,7 @@ import { PerformanceTrendsView } from './components/PerformanceTrendsView';
 import { BulkImportModal } from './components/BulkImportModal';
 import { DiagnosticPdfPreviewModal } from './components/DiagnosticPdfPreviewModal';
 import { DiagnosticExportHistoryModal, DiagnosticPdfHistoryItem } from './components/DiagnosticExportHistoryModal';
+import { PdfExportSnapshotCompareModal } from './components/PdfExportSnapshotCompareModal';
 import { HistoricalDataTapeModal } from './components/HistoricalDataTapeModal';
 import { SerializationErrorLogPanel } from './components/SerializationErrorLogPanel';
 import { SystemResourceMonitor } from './components/SystemResourceMonitor';
@@ -23,7 +24,7 @@ import { VisualQueryBuilderModal } from './components/VisualQueryBuilderModal';
 import { LatencyLegend } from './components/LatencyLegend';
 import { HeatmapIntensityScale } from './components/HeatmapIntensityScale';
 import { ExportPreviewModal } from './components/ExportPreviewModal';
-import { AlertTriangle, X, Flame, Zap, BellOff, TrendingUp, FileText, Loader, Sparkles, Search, Clipboard, Pin, RotateCcw, FileSpreadsheet, Camera, FileJson, Brain, Layers, Sliders, Settings, Info, RefreshCw, Target, Share2, CheckCircle2, ArrowRight } from 'lucide-react';
+import { AlertTriangle, X, Flame, Zap, BellOff, TrendingUp, FileText, Loader, Sparkles, Search, Clipboard, Pin, RotateCcw, FileSpreadsheet, Camera, FileJson, Brain, Layers, Sliders, Settings, Info, RefreshCw, Target, Share2, CheckCircle2, ArrowRight, GripVertical, Bookmark, Save, Trash2, ArrowUp, ArrowDown, CheckSquare, Volume2, GitCompare } from 'lucide-react';
 import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
 import {
   exportRecords,
@@ -176,6 +177,22 @@ export const PDF_SECTION_CONFIG_ITEMS: Record<
   }
 };
 
+export interface CsvExportProfile {
+  id: string;
+  name: string;
+  columns: string[];
+  isBuiltin?: boolean;
+}
+
+export const DEFAULT_CSV_COLUMNS: string[] = ['latency', 'totalRecords', 'cacheHit', 'queryCount', 'errorStatus', 'flags'];
+
+export const BUILTIN_CSV_PROFILES: CsvExportProfile[] = [
+  { id: 'full', name: 'Full Diagnostics (all columns)', columns: ['latency', 'totalRecords', 'cacheHit', 'queryCount', 'errorStatus', 'flags'], isBuiltin: true },
+  { id: 'performance', name: 'Performance Focus', columns: ['latency', 'queryCount', 'flags'], isBuiltin: true },
+  { id: 'minimal', name: 'Minimal Triage', columns: ['latency', 'flags'], isBuiltin: true },
+  { id: 'data-cache', name: 'Data & Cache Audit', columns: ['totalRecords', 'cacheHit', 'latency'], isBuiltin: true }
+];
+
 export default function App() {
   // Initialize database on mount
   useEffect(() => {
@@ -312,6 +329,8 @@ export default function App() {
   });
 
   const [consecutiveBreachCount, setConsecutiveBreachCount] = useState<number>(0);
+  const [isDelayedAutoFixTooltipVisible, setIsDelayedAutoFixTooltipVisible] = useState<boolean>(false);
+  const [autoFixLiveCountdownSec, setAutoFixLiveCountdownSec] = useState<number>(0);
 
   const handleToggleDelayedAutoFix = (enabled: boolean) => {
     setIsDelayedAutoFixEnabled(enabled);
@@ -525,28 +544,26 @@ export default function App() {
         ['Export Timestamp', new Date().toISOString()]
       ];
 
-      if (selectedCsvMetrics.includes('latency')) {
-        rows.push(['Execution Time (ms)', queryResult.executionTimeMs.toFixed(2)]);
-      }
-      if (selectedCsvMetrics.includes('totalRecords')) {
-        rows.push(['Total Records Scanned', String(queryResult.totalCount || 0)]);
-      }
-      if (selectedCsvMetrics.includes('cacheHit')) {
-        rows.push(['Cache Hit Status', String(queryResult.cacheHit)]);
-      }
-      if (selectedCsvMetrics.includes('queryCount')) {
-        rows.push(['N+1 Cascaded Query Count', String(queryResult.activeQueries || 101)]);
-      }
-      if (selectedCsvMetrics.includes('errorStatus')) {
-        rows.push(['System Error Status', String(queryResult.simulatedError || 'None')]);
-      }
-      if (selectedCsvMetrics.includes('flags')) {
-        rows.push(['Flag: batchEagerLoading', String(flags.batchEagerLoading)]);
-        rows.push(['Flag: btreeIndexing', String(flags.btreeIndexing)]);
-        rows.push(['Flag: queryCaching', String(flags.queryCaching)]);
-        rows.push(['Flag: virtualizedDOM', String(flags.virtualizedDOM)]);
-        rows.push(['Flag: deferredRendering', String(flags.deferredRendering)]);
-      }
+      const metricGenerators: Record<string, () => string[][]> = {
+        latency: () => [['Execution Time (ms)', queryResult.executionTimeMs.toFixed(2)]],
+        totalRecords: () => [['Total Records Scanned', String(queryResult.totalCount || 0)]],
+        cacheHit: () => [['Cache Hit Status', String(queryResult.cacheHit)]],
+        queryCount: () => [['N+1 Cascaded Query Count', String(queryResult.activeQueries || 101)]],
+        errorStatus: () => [['System Error Status', String(queryResult.simulatedError || 'None')]],
+        flags: () => [
+          ['Flag: batchEagerLoading', String(flags.batchEagerLoading)],
+          ['Flag: btreeIndexing', String(flags.btreeIndexing)],
+          ['Flag: queryCaching', String(flags.queryCaching)],
+          ['Flag: virtualizedDOM', String(flags.virtualizedDOM)],
+          ['Flag: deferredRendering', String(flags.deferredRendering)],
+        ]
+      };
+
+      selectedCsvMetrics.forEach(metricKey => {
+        if (metricGenerators[metricKey]) {
+          rows.push(...metricGenerators[metricKey]());
+        }
+      });
 
       const csvContent = '\uFEFF' + [headers.join(','), ...rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(','))].join('\r\n');
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -593,6 +610,7 @@ export default function App() {
     setTimeout(() => setProactiveToast(null), 4000);
   };
 
+
   // Plan Cache TTL state (in seconds)
   const [cacheTtlSeconds, setCacheTtlSeconds] = useState<number>(() => {
     try {
@@ -625,6 +643,24 @@ export default function App() {
     }, intervalMs);
     return () => clearInterval(interval);
   }, [autoRefreshEnabled, isLiveMetricsEnabled, liveMetricsInterval]);
+
+  // Live countdown timer that ticks down once the first breach event is recorded
+  useEffect(() => {
+    if (!isDelayedAutoFixEnabled || consecutiveBreachCount === 0 || flags.batchEagerLoading) {
+      setAutoFixLiveCountdownSec(0);
+      return;
+    }
+
+    const remainingBreaches = Math.max(1, 3 - consecutiveBreachCount);
+    const secondsPerBreach = liveMetricsInterval === '1s' ? 3 : 5;
+    setAutoFixLiveCountdownSec(remainingBreaches * secondsPerBreach);
+
+    const ticker = setInterval(() => {
+      setAutoFixLiveCountdownSec((prev) => (prev > 1 ? prev - 1 : 1));
+    }, 1000);
+
+    return () => clearInterval(ticker);
+  }, [isDelayedAutoFixEnabled, consecutiveBreachCount, flags.batchEagerLoading, liveMetricsInterval]);
 
   const queryResult = useMemo(() => {
     const _tick = refreshKey;
@@ -793,9 +829,92 @@ export default function App() {
   const [mutationHistory] = useState<DatabaseMutationHistoryEntry[]>(() => getDatabaseMutationHistory());
   const [trendHistory, setTrendHistory] = useState<LatencyTrendPoint[]>(() => getInitialTrendHistory());
   const [historyTapeFilterMode, setHistoryTapeFilterMode] = useState<'all' | 'latency-5min'>('all');
+
+  // Threshold Breach Alarm state & Web Audio API sound handler
+  const [isThresholdAlarmEnabled, setIsThresholdAlarmEnabled] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_threshold_alarm_enabled');
+      return saved ? JSON.parse(saved) : false;
+    } catch {
+      return false;
+    }
+  });
+
+  const playThresholdAlarmSound = () => {
+    try {
+      const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (!AudioContextClass) return;
+      const ctx = new AudioContextClass();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(659.25, ctx.currentTime); // E5
+      osc.frequency.setValueAtTime(987.77, ctx.currentTime + 0.12); // B5
+
+      gain.gain.setValueAtTime(0.06, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.35);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start();
+      osc.stop(ctx.currentTime + 0.35);
+    } catch (err) {
+      console.warn('Web Audio API playback prevented or not supported:', err);
+    }
+  };
+
+  // Alert on Trend Spike state & handler
+  const [isTrendSpikeAlertEnabled, setIsTrendSpikeAlertEnabled] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_trend_spike_alert_enabled');
+      return saved ? JSON.parse(saved) : false;
+    } catch {
+      return false;
+    }
+  });
+
+  const handleToggleTrendSpikeAlert = (enabled: boolean) => {
+    setIsTrendSpikeAlertEnabled(enabled);
+    try {
+      localStorage.setItem('enterprise_trend_spike_alert_enabled', JSON.stringify(enabled));
+    } catch {}
+    setProactiveToast({
+      title: enabled ? '📈 Trend Spike Alert Enabled' : 'Trend Spike Alert Disabled',
+      message: enabled ? 'Browser alert will trigger if N+1 count spikes >20% within 60s.' : 'Trend spike monitoring paused.',
+      flagToEnable: 'batchEagerLoading',
+      flagName: 'Batch Eager Loading'
+    });
+    setTimeout(() => setProactiveToast(null), 3500);
+
+    if (enabled) {
+      playThresholdAlarmSound();
+    }
+  };
+
+  const handleToggleThresholdAlarm = (enabled: boolean) => {
+    setIsThresholdAlarmEnabled(enabled);
+    try {
+      localStorage.setItem('enterprise_threshold_alarm_enabled', JSON.stringify(enabled));
+    } catch {}
+    setProactiveToast({
+      title: enabled ? '🔔 Threshold Breach Alarm Enabled' : 'Threshold Breach Alarm Disabled',
+      message: enabled ? 'Subtle audio notification will play when N+1 log intensity crosses the anomaly threshold.' : 'Alarm sound muted.',
+      flagToEnable: 'batchEagerLoading',
+      flagName: 'Batch Eager Loading'
+    });
+    setTimeout(() => setProactiveToast(null), 3500);
+
+    if (enabled) {
+      playThresholdAlarmSound();
+    }
+  };
+
   const [isSimulatingSequence, setIsSimulatingSequence] = useState(false);
   const [showExportLogHistoryPanel, setShowExportLogHistoryPanel] = useState(false);
   const [isExportHistoryModalOpen, setIsExportHistoryModalOpen] = useState(false);
+  const [isPdfSnapshotCompareModalOpen, setIsPdfSnapshotCompareModalOpen] = useState(false);
   const [pdfExportHistory, setPdfExportHistory] = useState<DiagnosticPdfHistoryItem[]>(() => {
     try {
       const saved = localStorage.getItem('enterprise_pdf_export_history');
@@ -804,13 +923,39 @@ export default function App() {
     return [
       {
         id: 'pdf-rep-init-1',
-        title: 'Correlation Diagnostic Report (Baseline)',
+        title: 'Correlation Diagnostic Report (Baseline - Unbatched)',
+        timestamp: Date.now() - 7200000,
+        timeFormatted: new Date(Date.now() - 7200000).toLocaleTimeString(),
+        recordCount: 50000,
+        executionTimeMs: 312.5,
+        fileSizeKB: 198,
+        summary: 'Baseline performance audit report prior to N+1 optimization sequence with batchEagerLoading disabled.',
+        flags: { btreeIndexing: false, batchEagerLoading: false, queryCaching: false, virtualizedDOM: true, deferredRendering: true },
+        n1LogsCount: 14
+      },
+      {
+        id: 'pdf-rep-init-2',
+        title: 'Correlation Diagnostic Report (Mid-Optimization)',
         timestamp: Date.now() - 3600000,
         timeFormatted: new Date(Date.now() - 3600000).toLocaleTimeString(),
-        recordCount: 25000,
-        executionTimeMs: 215.4,
-        fileSizeKB: 184,
-        summary: 'Baseline performance audit report prior to N+1 optimization sequence.'
+        recordCount: 50000,
+        executionTimeMs: 185.0,
+        fileSizeKB: 175,
+        summary: 'Intermediate audit after enabling B-Tree Indexing and partial caching.',
+        flags: { btreeIndexing: true, batchEagerLoading: false, queryCaching: true, virtualizedDOM: true, deferredRendering: true },
+        n1LogsCount: 8
+      },
+      {
+        id: 'pdf-rep-init-3',
+        title: 'Correlation Diagnostic Report (Fully Optimized)',
+        timestamp: Date.now() - 600000,
+        timeFormatted: new Date(Date.now() - 600000).toLocaleTimeString(),
+        recordCount: 50000,
+        executionTimeMs: 42.1,
+        fileSizeKB: 162,
+        summary: 'Fully optimized audit with batchEagerLoading and B-Tree indexing enabled.',
+        flags: { btreeIndexing: true, batchEagerLoading: true, queryCaching: true, virtualizedDOM: true, deferredRendering: true },
+        n1LogsCount: 1
       }
     ];
   });
@@ -887,6 +1032,7 @@ export default function App() {
       flagName: 'Batch Eager Loading'
     });
   };
+
   const [selectedCsvMetrics, setSelectedCsvMetrics] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem('enterprise_diagnostic_csv_columns');
@@ -895,6 +1041,162 @@ export default function App() {
       return ['latency', 'flags', 'queryCount', 'errorStatus', 'totalRecords', 'cacheHit'];
     }
   });
+
+  const [csvColumnOrder, setCsvColumnOrder] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_diagnostic_csv_column_order');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+      return DEFAULT_CSV_COLUMNS;
+    } catch {
+      return DEFAULT_CSV_COLUMNS;
+    }
+  });
+
+  const [csvExportProfiles, setCsvExportProfiles] = useState<CsvExportProfile[]>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_csv_export_profiles');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return [...BUILTIN_CSV_PROFILES, ...parsed.filter((p: any) => !BUILTIN_CSV_PROFILES.some(b => b.id === p.id))];
+        }
+      }
+      return BUILTIN_CSV_PROFILES;
+    } catch {
+      return BUILTIN_CSV_PROFILES;
+    }
+  });
+
+  const [activeProfileId, setActiveProfileId] = useState<string>('full');
+  const [newProfileName, setNewProfileName] = useState<string>('');
+  const [draggedColumnId, setDraggedColumnId] = useState<string | null>(null);
+  const [dragOverColumnId, setDragOverColumnId] = useState<string | null>(null);
+
+  const handleApplyProfile = (profile: CsvExportProfile) => {
+    setSelectedCsvMetrics(profile.columns);
+    setActiveProfileId(profile.id);
+    const remaining = csvColumnOrder.filter(id => !profile.columns.includes(id));
+    const newOrder = [...profile.columns, ...remaining];
+    setCsvColumnOrder(newOrder);
+    try {
+      localStorage.setItem('enterprise_diagnostic_csv_columns', JSON.stringify(profile.columns));
+      localStorage.setItem('enterprise_diagnostic_csv_column_order', JSON.stringify(newOrder));
+    } catch {}
+    setProactiveToast({
+      title: 'Profile Applied',
+      message: `Switched to "${profile.name}" (${profile.columns.length} columns).`
+    });
+    setTimeout(() => setProactiveToast(null), 3000);
+  };
+
+  const handleSaveProfile = () => {
+    if (!newProfileName.trim()) return;
+    const profileId = `profile-${Date.now()}`;
+    const newProfile: CsvExportProfile = {
+      id: profileId,
+      name: newProfileName.trim(),
+      columns: [...selectedCsvMetrics],
+      isBuiltin: false
+    };
+    const updatedProfiles = [...csvExportProfiles, newProfile];
+    setCsvExportProfiles(updatedProfiles);
+    setActiveProfileId(profileId);
+    setNewProfileName('');
+    try {
+      const customOnly = updatedProfiles.filter(p => !p.isBuiltin);
+      localStorage.setItem('enterprise_csv_export_profiles', JSON.stringify(customOnly));
+    } catch {}
+    setProactiveToast({
+      title: 'Profile Saved',
+      message: `Configuration profile "${newProfile.name}" saved successfully.`
+    });
+    setTimeout(() => setProactiveToast(null), 3500);
+  };
+
+  const handleDeleteProfile = (profileId: string) => {
+    const updatedProfiles = csvExportProfiles.filter(p => p.id !== profileId);
+    setCsvExportProfiles(updatedProfiles);
+    if (activeProfileId === profileId) {
+      setActiveProfileId('full');
+    }
+    try {
+      const customOnly = updatedProfiles.filter(p => !p.isBuiltin);
+      localStorage.setItem('enterprise_csv_export_profiles', JSON.stringify(customOnly));
+    } catch {}
+  };
+
+  const handleResetColumnOrder = () => {
+    setCsvColumnOrder(DEFAULT_CSV_COLUMNS);
+    const resetSelected = DEFAULT_CSV_COLUMNS.filter(id => selectedCsvMetrics.includes(id));
+    const next = resetSelected.length > 0 ? resetSelected : [...DEFAULT_CSV_COLUMNS];
+    setSelectedCsvMetrics(next);
+    try {
+      localStorage.setItem('enterprise_diagnostic_csv_column_order', JSON.stringify(DEFAULT_CSV_COLUMNS));
+      localStorage.setItem('enterprise_diagnostic_csv_columns', JSON.stringify(next));
+    } catch {}
+    setProactiveToast({
+      title: 'Column Order Reset',
+      message: 'Restored column sequence to application default.'
+    });
+    setTimeout(() => setProactiveToast(null), 3000);
+  };
+
+  const handleCopyProfileToClipboard = () => {
+    const profileData = {
+      profileName: csvExportProfiles.find(p => p.id === activeProfileId)?.name || 'Custom Configuration',
+      selectedColumns: selectedCsvMetrics,
+      columnOrder: csvColumnOrder,
+      exportedAt: new Date().toISOString()
+    };
+    const jsonStr = JSON.stringify(profileData, null, 2);
+    navigator.clipboard?.writeText(jsonStr);
+    setProactiveToast({
+      title: '📋 Profile Copied to Clipboard',
+      message: `Serialized ${selectedCsvMetrics.length} selected columns and full column order into shareable JSON string.`,
+      type: 'success'
+    });
+    setTimeout(() => setProactiveToast(null), 3500);
+  };
+
+  const handleDropColumn = (targetId: string) => {
+    if (!draggedColumnId || draggedColumnId === targetId) return;
+    const fromIdx = csvColumnOrder.indexOf(draggedColumnId);
+    const toIdx = csvColumnOrder.indexOf(targetId);
+    if (fromIdx !== -1 && toIdx !== -1) {
+      const newOrder = [...csvColumnOrder];
+      const [moved] = newOrder.splice(fromIdx, 1);
+      newOrder.splice(toIdx, 0, moved);
+      setCsvColumnOrder(newOrder);
+      const newSelected = newOrder.filter(id => selectedCsvMetrics.includes(id));
+      setSelectedCsvMetrics(newSelected);
+      try {
+        localStorage.setItem('enterprise_diagnostic_csv_column_order', JSON.stringify(newOrder));
+        localStorage.setItem('enterprise_diagnostic_csv_columns', JSON.stringify(newSelected));
+      } catch {}
+    }
+    setDraggedColumnId(null);
+    setDragOverColumnId(null);
+  };
+
+  const handleMoveColumn = (columnId: string, direction: 'up' | 'down') => {
+    const idx = csvColumnOrder.indexOf(columnId);
+    if (idx === -1) return;
+    const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (targetIdx < 0 || targetIdx >= csvColumnOrder.length) return;
+    const newOrder = [...csvColumnOrder];
+    const [moved] = newOrder.splice(idx, 1);
+    newOrder.splice(targetIdx, 0, moved);
+    setCsvColumnOrder(newOrder);
+    const newSelected = newOrder.filter(id => selectedCsvMetrics.includes(id));
+    setSelectedCsvMetrics(newSelected);
+    try {
+      localStorage.setItem('enterprise_diagnostic_csv_column_order', JSON.stringify(newOrder));
+      localStorage.setItem('enterprise_diagnostic_csv_columns', JSON.stringify(newSelected));
+    } catch {}
+  };
   const [isCsvColumnsModalOpen, setIsCsvColumnsModalOpen] = useState(false);
   const [csvColumnsSearchQuery, setCsvColumnsSearchQuery] = useState('');
   const [isBannerPinned, setIsBannerPinned] = useState<boolean>(() => {
@@ -1008,6 +1310,15 @@ export default function App() {
   const handleViewSerializationLogs = () => {
     setActiveView('grid');
     setTimeout(() => {
+      const panelEl = document.getElementById('serialization-error-log-panel') || document.getElementById('serialization-error-log-section');
+      if (panelEl) {
+        panelEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        panelEl.classList.add('animate-panel-shake', 'animate-panel-glow', 'ring-4', 'ring-rose-500', 'transition-all', 'duration-700');
+        setTimeout(() => {
+          panelEl.classList.remove('animate-panel-shake', 'animate-panel-glow', 'ring-4', 'ring-rose-500');
+        }, 2500);
+      }
+
       const problematicLog = (serializationLogs || []).find(l => 
         l.type.includes('N+1') || l.type.includes('LATENCY') || l.severity === 'error' || l.severity === 'anomaly'
       ) || (serializationLogs || [])[0];
@@ -1016,22 +1327,11 @@ export default function App() {
         setAutoExpandLogId(problematicLog.id);
         const entryEl = document.getElementById(`serialization-log-entry-${problematicLog.id}`);
         if (entryEl) {
-          entryEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
           entryEl.classList.add('animate-panel-shake', 'animate-panel-glow', 'ring-4', 'ring-rose-500', 'bg-rose-100/90', 'transition-all', 'duration-700');
           setTimeout(() => {
             entryEl.classList.remove('animate-panel-shake', 'animate-panel-glow', 'ring-4', 'ring-rose-500', 'bg-rose-100/90');
           }, 2500);
-          return;
         }
-      }
-
-      const el = document.getElementById('serialization-error-log-section');
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        el.classList.add('animate-panel-shake', 'animate-panel-glow', 'ring-4', 'ring-rose-500', 'transition-all', 'duration-700');
-        setTimeout(() => {
-          el.classList.remove('animate-panel-shake', 'animate-panel-glow', 'ring-4', 'ring-rose-500');
-        }, 2500);
       }
     }, 150);
   };
@@ -1479,6 +1779,56 @@ export default function App() {
     String(l.details?.triggerSource || '').toUpperCase().includes('N+1')
   ).length;
 
+  const [isBadgeBreathing, setIsBadgeBreathing] = useState<boolean>(false);
+  const prevN1CountRef = useRef<number>(n1LogsCount);
+  const [panelShakeGlowTrigger, setPanelShakeGlowTrigger] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (n1LogsCount > prevN1CountRef.current) {
+      setIsBadgeBreathing(true);
+      const timer = setTimeout(() => setIsBadgeBreathing(false), 900);
+      return () => clearTimeout(timer);
+    }
+    prevN1CountRef.current = n1LogsCount;
+  }, [n1LogsCount]);
+
+  const prevN1RatioRef = useRef<number>(0);
+  const prevLatencyRef = useRef<number>(queryResult.executionTimeMs);
+
+  useEffect(() => {
+    const totalLogs = Math.max(1, serializationLogs.length);
+    const currentRatio = n1LogsCount / totalLogs;
+    const threshold = 0.5; // 50% anomaly threshold
+
+    if (isThresholdAlarmEnabled) {
+      const crossedN1Threshold = prevN1RatioRef.current < threshold && currentRatio >= threshold;
+      const crossedLatencyThreshold = prevLatencyRef.current <= customLatencyThreshold && queryResult.executionTimeMs > customLatencyThreshold && n1LogsCount > 0;
+
+      if (crossedN1Threshold || crossedLatencyThreshold) {
+        playThresholdAlarmSound();
+      }
+    }
+    prevN1RatioRef.current = currentRatio;
+    prevLatencyRef.current = queryResult.executionTimeMs;
+  }, [n1LogsCount, serializationLogs.length, queryResult.executionTimeMs, customLatencyThreshold, isThresholdAlarmEnabled]);
+
+
+  // Keyboard shortcut Alt+E within banner context to export serialization logs to CSV
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.altKey && e.key.toLowerCase() === 'e') {
+        const bannerExportBtn = document.getElementById('btn-export-logs-csv-banner');
+        if (bannerExportBtn) {
+          e.preventDefault();
+          handleExportSerializationLogsCsv();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [serializationLogs]);
+
+
   const [n1LogsHistory, setN1LogsHistory] = useState<{ timestamp: number; count: number }[]>(() => [
     { timestamp: Date.now() - 14 * 60 * 1000, count: Math.max(0, n1LogsCount - 4) },
     { timestamp: Date.now() - 10 * 60 * 1000, count: Math.max(0, n1LogsCount - 3) },
@@ -1496,7 +1846,26 @@ export default function App() {
       }
       return filtered;
     });
-  }, [n1LogsCount]);
+
+    if (isTrendSpikeAlertEnabled && n1LogsHistory.length >= 2) {
+      // Find point ~60 seconds ago (or oldest within 60-70s)
+      const sixtySecsAgo = now - 60 * 1000;
+      const baselinePoint = n1LogsHistory.find(p => p.timestamp <= sixtySecsAgo) || n1LogsHistory[0];
+      if (baselinePoint && baselinePoint.count > 0) {
+        const increaseRatio = (n1LogsCount - baselinePoint.count) / baselinePoint.count;
+        if (increaseRatio > 0.20) {
+          playThresholdAlarmSound();
+          setProactiveToast({
+            title: '🚨 N+1 Trend Spike Detected (>20% Increase)',
+            message: `N+1 count surged from ${baselinePoint.count} to ${n1LogsCount} (+${Math.round(increaseRatio * 100)}%) within a 60s window!`,
+            flagToEnable: 'batchEagerLoading',
+            flagName: 'Batch Eager Loading'
+          });
+          setTimeout(() => setProactiveToast(null), 5000);
+        }
+      }
+    }
+  }, [n1LogsCount, isTrendSpikeAlertEnabled]);
   const [dataTapeEntries, setDataTapeEntries] = useState<DataTapeEntry[]>(() => getInitialDataTapeEntries());
   const [selectedTapeEntry, setSelectedTapeEntry] = useState<DataTapeEntry | null>(null);
 
@@ -1892,7 +2261,9 @@ export default function App() {
         recordCount: queryResult.totalCount,
         executionTimeMs: queryResult.executionTimeMs,
         fileSizeKB: Math.floor(Math.random() * 80) + 140,
-        summary: `Flags state: batchEagerLoading=${flags.batchEagerLoading}, queryCaching=${flags.queryCaching}. Latency: ${queryResult.executionTimeMs.toFixed(1)}ms.`
+        summary: `Flags state: batchEagerLoading=${flags.batchEagerLoading}, queryCaching=${flags.queryCaching}. Latency: ${queryResult.executionTimeMs.toFixed(1)}ms.`,
+        flags: { ...flags },
+        n1LogsCount: n1LogsCount
       };
       setPdfExportHistory(prev => [newHistoryItem, ...prev]);
     } catch (err) {
@@ -2457,14 +2828,60 @@ export default function App() {
                     onClick={() => {
                       setShowOnlyN1Logs(true);
                       handleViewSerializationLogs();
+                      setPanelShakeGlowTrigger(prev => !prev);
                     }}
-                    className="font-mono text-[11px] bg-rose-950/90 border border-rose-500/60 text-rose-200 px-3 py-1 rounded-xl font-bold flex items-center gap-1.5 hover:bg-rose-900 hover:text-white transition-colors cursor-pointer shadow-xs"
-                    title="Click or press Ctrl+N while banner is focused to filter and scroll directly to active N+1 cascade log entries"
+                    className={`font-mono text-[11px] bg-rose-950/90 border text-rose-200 px-3 py-1.5 rounded-xl font-bold flex flex-col items-center justify-center gap-1 hover:bg-rose-900 hover:text-white transition-colors cursor-pointer shadow-xs min-w-[210px] ${
+                      isBadgeBreathing
+                        ? 'animate-badge-breathing border-rose-300 ring-2 ring-rose-500/50'
+                        : 'border-rose-500/60'
+                    }`}
+                    title={`Click or press Ctrl+N while banner is focused to filter and scroll directly to active N+1 cascade log entries\nN+1 Intensity: ${n1LogsCount}/${(serializationLogs || []).length || 1} logs (${Math.round((n1LogsCount / Math.max(1, (serializationLogs || []).length || 1)) * 100)}%)`}
                   >
-                    <Layers className="w-3.5 h-3.5 text-rose-400" />
-                    <span>Active N+1 Cascade Logs: <strong className="text-white underline">{n1LogsCount}</strong></span>
-                    <span className="text-rose-400">→</span>
-                    <kbd className="px-1.5 py-0.2 bg-rose-900 border border-rose-500 rounded text-[10px] text-rose-200 ml-1">Ctrl+N</kbd>
+                    <div className="flex items-center gap-1.5 w-full justify-between">
+                      <div className="flex items-center gap-1.5">
+                        <Layers className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                        <span>Active N+1 Cascade Logs: <strong className="text-white underline">{n1LogsCount}</strong></span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <span className="text-rose-400">→</span>
+                        <kbd className="px-1.5 py-0.2 bg-rose-900 border border-rose-500 rounded text-[10px] text-rose-200 ml-1">Ctrl+N</kbd>
+                      </div>
+                    </div>
+                    {/* Small inline histogram Sparkline showing log count density over last 15 minutes using Heatmap Intensity Scale colors */}
+                    <div
+                      id="sparkline-histogram-n1-density"
+                      data-testid="sparkline-histogram-n1-density"
+                      className="w-full flex items-end gap-0.5 h-4 bg-zinc-950/80 rounded-lg px-1.5 py-0.5 border border-rose-500/30"
+                      title="15-Minute Log Count Density Histogram (Color-coded by Heatmap Intensity Scale)"
+                    >
+                      {(() => {
+                        const history = (n1LogsHistory || []).filter(p => Date.now() - p.timestamp <= 15 * 60 * 1000);
+                        const points = history.length >= 2 ? history : [
+                          { timestamp: Date.now() - 10 * 60 * 1000, count: Math.max(0, n1LogsCount - 2) },
+                          { timestamp: Date.now(), count: n1LogsCount }
+                        ];
+                        const maxCount = Math.max(...points.map(p => p.count), 1);
+                        return points.map((p, idx) => {
+                          const ratio = p.count / maxCount;
+                          const heightPct = Math.max(20, Math.min(100, Math.round(ratio * 100)));
+                          const col = ratio >= 0.75
+                            ? 'bg-rose-600'
+                            : ratio >= 0.5
+                            ? 'bg-orange-500'
+                            : ratio >= 0.25
+                            ? 'bg-amber-400'
+                            : 'bg-emerald-500';
+                          return (
+                            <div
+                              key={idx}
+                              className={`flex-1 rounded-xs transition-all duration-300 ${col}`}
+                              style={{ height: `${heightPct}%` }}
+                              title={`Time: ${new Date(p.timestamp).toLocaleTimeString()} • Count: ${p.count}`}
+                            />
+                          );
+                        });
+                      })()}
+                    </div>
                   </button>
                   <div
                     id="sparkline-n1-logs-trend"
@@ -2542,6 +2959,17 @@ export default function App() {
                   >
                     <Share2 className="w-3.5 h-3.5 text-rose-300" />
                     <span>Share Snapshot</span>
+                  </button>
+                  <button
+                    type="button"
+                    id="btn-pdf-snapshot-compare"
+                    data-testid="btn-pdf-snapshot-compare"
+                    onClick={() => setIsPdfSnapshotCompareModalOpen(true)}
+                    className="text-xs font-mono font-semibold text-rose-300 hover:text-white underline underline-offset-4 cursor-pointer transition-colors flex items-center gap-1"
+                    title="Side-by-side snapshot comparison of two timestamps from PDF export history (latency, flag state, and log counts)"
+                  >
+                    <GitCompare className="w-3.5 h-3.5 text-rose-300" />
+                    <span>Snapshot Comparison</span>
                   </button>
                   <button
                     type="button"
@@ -2642,6 +3070,44 @@ export default function App() {
               </div>
             </div>
             <div className="flex items-center gap-2 flex-wrap shrink-0">
+              <label
+                id="label-trend-spike-alert"
+                data-testid="label-trend-spike-alert"
+                className="flex items-center gap-2 cursor-pointer select-none bg-zinc-950/60 hover:bg-zinc-950/80 px-3 py-2 rounded-xl border border-indigo-500/40 hover:border-indigo-400 transition-colors"
+                title="Alert on Trend Spike: Triggers an audio and proactive toast alert if the N+1 log count increases by more than 20% within a 60-second window."
+              >
+                <input
+                  type="checkbox"
+                  id="toggle-trend-spike-alert"
+                  data-testid="toggle-trend-spike-alert"
+                  checked={isTrendSpikeAlertEnabled}
+                  onChange={(e) => handleToggleTrendSpikeAlert(e.target.checked)}
+                  className="w-4 h-4 accent-indigo-500 rounded cursor-pointer"
+                />
+                <span className="text-xs font-mono font-bold text-indigo-200 flex items-center gap-1.5">
+                  <TrendingUp className="w-3.5 h-3.5 text-indigo-300" />
+                  <span>Alert on Trend Spike</span>
+                </span>
+              </label>
+              <label
+                id="label-threshold-breach-alarm"
+                data-testid="label-threshold-breach-alarm"
+                className="flex items-center gap-2 cursor-pointer select-none bg-zinc-950/60 hover:bg-zinc-950/80 px-3 py-2 rounded-xl border border-cyan-500/40 hover:border-cyan-400 transition-colors"
+                title="Threshold Breach Alarm: Plays a subtle Web Audio API notification sound whenever N+1 log intensity crosses the anomaly threshold"
+              >
+                <input
+                  type="checkbox"
+                  id="toggle-threshold-breach-alarm"
+                  data-testid="toggle-threshold-breach-alarm"
+                  checked={isThresholdAlarmEnabled}
+                  onChange={(e) => handleToggleThresholdAlarm(e.target.checked)}
+                  className="w-4 h-4 accent-cyan-500 rounded cursor-pointer"
+                />
+                <span className="text-xs font-mono font-bold text-cyan-200 flex items-center gap-1.5">
+                  <Volume2 className="w-3.5 h-3.5 text-cyan-300" />
+                  <span>Threshold Breach Alarm</span>
+                </span>
+              </label>
               <label className="flex items-center gap-2 cursor-pointer select-none bg-zinc-950/60 hover:bg-zinc-950/80 px-3 py-2 rounded-xl border border-rose-500/40 transition-colors">
                 <input
                   type="checkbox"
@@ -2653,31 +3119,139 @@ export default function App() {
                 />
                 <span className="text-xs font-mono font-bold text-rose-200">Auto-Resolve on Spike</span>
               </label>
-              <label
-                className="flex items-center gap-2 cursor-pointer select-none bg-zinc-950/60 hover:bg-zinc-950/80 px-3 py-2 rounded-xl border border-amber-500/40 transition-colors"
-                title="Waits for 3 consecutive breach events before automatically applying the recommended optimization, reducing noise from transient spikes"
+              <div
+                className="relative group"
+                onMouseEnter={() => setIsDelayedAutoFixTooltipVisible(true)}
+                onMouseLeave={() => setIsDelayedAutoFixTooltipVisible(false)}
+                onFocus={() => setIsDelayedAutoFixTooltipVisible(true)}
+                onBlur={() => setIsDelayedAutoFixTooltipVisible(false)}
               >
-                <input
-                  type="checkbox"
-                  id="toggle-delayed-auto-fix"
-                  data-testid="toggle-delayed-auto-fix"
-                  checked={isDelayedAutoFixEnabled}
-                  onChange={(e) => handleToggleDelayedAutoFix(e.target.checked)}
-                  className="w-4 h-4 accent-amber-500 rounded cursor-pointer"
-                />
-                <span className="text-xs font-mono font-bold text-amber-200 flex items-center gap-1.5">
-                  <span>Delayed Auto-Fix</span>
-                  {isDelayedAutoFixEnabled && (
-                    <span
-                      id="badge-delayed-auto-fix-count"
-                      data-testid="badge-delayed-auto-fix-count"
-                      className="px-1.5 py-0.2 rounded text-[10px] bg-amber-500/30 text-amber-200 border border-amber-400/40 font-mono font-bold"
-                    >
+                <label
+                  id="label-delayed-auto-fix"
+                  data-testid="label-delayed-auto-fix"
+                  className="flex items-center gap-2 cursor-pointer select-none bg-zinc-950/60 hover:bg-zinc-950/80 px-3 py-2 rounded-xl border border-amber-500/40 hover:border-amber-400 transition-colors"
+                  title={`Delayed Auto-Fix Trigger Conditions:\n1. batchEagerLoading is disabled (N+1 query cascades active)\n2. Execution latency > ${customLatencyThreshold}ms (current: ${queryResult.executionTimeMs.toFixed(1)}ms)\n3. 3 consecutive breach events must occur to avoid transient false positives\n4. Latency stabilizing below threshold automatically resets counter to 0\n\n${consecutiveBreachCount >= 1 ? `🚨 LIVE COUNTDOWN ACTIVE: Breach ${consecutiveBreachCount}/3 recorded (${3 - consecutiveBreachCount} breach${3 - consecutiveBreachCount === 1 ? '' : 'es'} remaining, ~${autoFixLiveCountdownSec}s until auto-fix enables batchEagerLoading)` : 'Status: Normal monitoring (0/3 breaches recorded)'}`}
+                >
+                  <input
+                    type="checkbox"
+                    id="toggle-delayed-auto-fix"
+                    data-testid="toggle-delayed-auto-fix"
+                    checked={isDelayedAutoFixEnabled}
+                    onChange={(e) => handleToggleDelayedAutoFix(e.target.checked)}
+                    className="w-4 h-4 accent-amber-500 rounded cursor-pointer"
+                  />
+                  <span className="text-xs font-mono font-bold text-amber-200 flex items-center gap-1.5 flex-wrap">
+                    <span>Delayed Auto-Fix</span>
+                    <Info className="w-3.5 h-3.5 text-amber-300/80" />
+                    {isDelayedAutoFixEnabled && (
+                      <span
+                        id="badge-delayed-auto-fix-count"
+                        data-testid="badge-delayed-auto-fix-count"
+                        className="px-1.5 py-0.2 rounded text-[10px] bg-amber-500/30 text-amber-200 border border-amber-400/40 font-mono font-bold"
+                      >
+                        {consecutiveBreachCount}/3 breaches
+                      </span>
+                    )}
+                    {isDelayedAutoFixEnabled && consecutiveBreachCount >= 1 && (
+                      <span
+                        id="indicator-delayed-auto-fix-countdown"
+                        data-testid="indicator-delayed-auto-fix-countdown"
+                        className="px-2 py-0.5 rounded-lg text-[10px] bg-rose-500/30 text-rose-200 border border-rose-400/60 font-mono font-extrabold animate-pulse flex items-center gap-1.5 shadow-xs"
+                        title={`Live Countdown: ${3 - consecutiveBreachCount} more breach event(s) remaining (~${autoFixLiveCountdownSec}s) until automatic batchEagerLoading resolution`}
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-ping shrink-0" />
+                        <span>⏳ Auto-fix in {3 - consecutiveBreachCount} ({autoFixLiveCountdownSec}s)</span>
+                      </span>
+                    )}
+                  </span>
+                </label>
+
+                {/* Detailed hover tooltip explaining trigger conditions and showing live countdown */}
+                <div
+                  id="tooltip-delayed-auto-fix"
+                  data-testid="tooltip-delayed-auto-fix"
+                  role="tooltip"
+                  className={`absolute bottom-full mb-2 left-0 w-88 max-w-sm bg-zinc-950/95 backdrop-blur-md border border-amber-500/70 rounded-2xl p-4 text-xs font-sans text-zinc-200 shadow-2xl z-50 transition-all duration-200 pointer-events-none ${
+                    isDelayedAutoFixTooltipVisible ? 'opacity-100 visible translate-y-0' : 'opacity-0 invisible translate-y-1 group-hover:opacity-100 group-hover:visible group-hover:translate-y-0'
+                  }`}
+                >
+                  <div className="font-extrabold text-amber-400 flex items-center justify-between pb-1.5 mb-2 border-b border-zinc-800">
+                    <div className="flex items-center gap-1.5">
+                      <span className="p-1 rounded-md bg-amber-500/20 text-amber-300">⏱️</span>
+                      <span>Delayed Auto-Fix Trigger Rules</span>
+                    </div>
+                    <span className="font-mono text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 font-bold">
                       {consecutiveBreachCount}/3 breaches
                     </span>
-                  )}
-                </span>
-              </label>
+                  </div>
+
+                  <div className="space-y-2 text-zinc-300 text-[11px] leading-relaxed">
+                    <p className="text-zinc-400">
+                      Delayed Auto-Fix suppresses false positives from transient spikes by requiring persistent bottleneck confirmation before modifying engine flags.
+                    </p>
+
+                    <div className="bg-zinc-900/90 rounded-xl p-2.5 border border-zinc-800 space-y-1.5">
+                      <div className="font-bold text-zinc-200 text-[11px] uppercase tracking-wider text-amber-300">
+                        Trigger Conditions:
+                      </div>
+                      <ul className="space-y-1 font-mono text-[10.5px]">
+                        <li className="flex items-start gap-1.5">
+                          <span className="text-amber-400 shrink-0 font-bold">1.</span>
+                          <span><strong className="text-white">Flag Disabled:</strong> <code className="text-amber-300">batchEagerLoading</code> must be <strong className="text-rose-400">false</strong>.</span>
+                        </li>
+                        <li className="flex items-start gap-1.5">
+                          <span className="text-amber-400 shrink-0 font-bold">2.</span>
+                          <span><strong className="text-white">Latency Breach:</strong> Latency exceeds <strong className="text-white">{customLatencyThreshold}ms</strong> (current: <strong className="text-rose-300">{queryResult.executionTimeMs.toFixed(1)}ms</strong>).</span>
+                        </li>
+                        <li className="flex items-start gap-1.5">
+                          <span className="text-amber-400 shrink-0 font-bold">3.</span>
+                          <span><strong className="text-white">3 Consecutive Events:</strong> Must breach 3 consecutive ticks without recovering.</span>
+                        </li>
+                        <li className="flex items-start gap-1.5">
+                          <span className="text-amber-400 shrink-0 font-bold">4.</span>
+                          <span><strong className="text-white">Auto-Reset:</strong> If latency stabilizes below <strong className="text-emerald-400">{customLatencyThreshold}ms</strong>, breach count resets to 0.</span>
+                        </li>
+                      </ul>
+                    </div>
+
+                    {/* Live countdown indicator once the first breach event is recorded */}
+                    {consecutiveBreachCount >= 1 ? (
+                      <div
+                        id="tooltip-delayed-auto-fix-countdown"
+                        data-testid="tooltip-delayed-auto-fix-countdown"
+                        className="mt-2.5 p-2.5 rounded-xl bg-gradient-to-r from-rose-950/90 to-amber-950/90 border border-rose-500/60 space-y-1.5 shadow-inner"
+                      >
+                        <div className="flex items-center justify-between font-mono text-[11px]">
+                          <span className="flex items-center gap-1.5 font-bold text-rose-200">
+                            <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />
+                            <span>First Breach Recorded!</span>
+                          </span>
+                          <span className="font-extrabold text-amber-300 bg-rose-950 px-2 py-0.5 rounded border border-rose-500/50">
+                            {consecutiveBreachCount}/3 confirmed
+                          </span>
+                        </div>
+                        <div className="w-full bg-zinc-900 rounded-full h-1.5 overflow-hidden">
+                          <div
+                            className="bg-gradient-to-r from-amber-400 to-rose-500 h-full transition-all duration-300"
+                            style={{ width: `${(consecutiveBreachCount / 3) * 100}%` }}
+                          />
+                        </div>
+                        <div className="flex items-center justify-between text-[11px] font-mono pt-0.5">
+                          <span className="text-rose-200 font-semibold">Live Countdown:</span>
+                          <span className="text-white font-extrabold bg-rose-900/80 px-2 py-0.5 rounded border border-rose-400/50">
+                            Auto-fix in {3 - consecutiveBreachCount} {3 - consecutiveBreachCount === 1 ? 'breach' : 'breaches'} ({autoFixLiveCountdownSec}s)
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="mt-1 pt-1.5 border-t border-zinc-800 flex items-center justify-between text-[10px] font-mono text-zinc-400">
+                        <span>Countdown status:</span>
+                        <span className="text-emerald-400 font-semibold">Ready (activates on 1st breach)</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
               <label className="flex items-center gap-2 cursor-pointer select-none bg-zinc-950/60 hover:bg-zinc-950/80 px-3 py-2 rounded-xl border border-emerald-500/40 transition-colors">
                 <input
                   type="checkbox"
@@ -3249,7 +3823,7 @@ export default function App() {
                   data-testid="btn-export-logs-csv-banner"
                   onClick={handleExportSerializationLogsCsv}
                   className="p-2 text-indigo-300 hover:text-white hover:bg-indigo-800/40 rounded-xl transition-all duration-300 cursor-pointer border border-transparent hover:border-indigo-400/50"
-                  title="Export current serialization logs to CSV format"
+                  title="Export current serialization logs to CSV format (Alt+E)"
                 >
                   <FileSpreadsheet className="w-4 h-4 text-indigo-300" />
                 </button>
@@ -3455,6 +4029,7 @@ export default function App() {
                 flags={flags}
                 showOnlyN1Logs={showOnlyN1Logs}
                 autoExpandLogId={autoExpandLogId}
+                shakeGlowTrigger={panelShakeGlowTrigger}
               />
             </div>
           </>
@@ -3591,7 +4166,8 @@ export default function App() {
           data-testid="modal-configure-csv-columns"
           className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn font-sans"
         >
-          <div className="bg-zinc-900 rounded-2xl shadow-2xl max-w-md w-full overflow-hidden border border-zinc-700 text-white animate-scaleUp">
+          <div className="bg-zinc-900 rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden border border-zinc-700 text-white animate-scaleUp">
+            {/* Header */}
             <div className="p-5 bg-gradient-to-r from-zinc-900 via-indigo-950 to-zinc-900 flex items-center justify-between border-b border-zinc-800">
               <div className="flex items-center gap-3">
                 <div className="p-2.5 bg-indigo-600/30 border border-indigo-500/40 rounded-xl text-indigo-300">
@@ -3599,58 +4175,177 @@ export default function App() {
                 </div>
                 <div>
                   <h3 className="font-extrabold text-base text-white tracking-wide">Configure CSV Diagnostic Columns</h3>
-                  <p className="text-xs text-zinc-400">Select which metrics are included in generated CSV reports</p>
+                  <p className="text-xs text-zinc-400">Reorder with drag-and-drop &amp; manage export configuration profiles</p>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => setIsCsvColumnsModalOpen(false)}
                 className="text-zinc-400 hover:text-white cursor-pointer p-1"
+                aria-label="Close modal"
               >
                 ✕
               </button>
             </div>
-            <div className="px-5 py-3 bg-zinc-950/80 border-b border-zinc-800 flex items-center justify-between text-xs">
-              <div className="flex items-center gap-2">
-                <span className="font-semibold text-zinc-300">Quick Preset:</span>
+
+            {/* Top Bulk Toggle Operations Toolbar */}
+            <div
+              id="toolbar-csv-bulk-toggle-top"
+              data-testid="toolbar-csv-bulk-toggle-top"
+              className="px-5 py-3 bg-zinc-950/95 border-b border-zinc-800 flex items-center justify-between text-xs flex-wrap gap-2.5"
+            >
+              <div className="flex items-center gap-2.5">
+                <span className="font-bold text-zinc-300 text-xs flex items-center gap-1.5">
+                  <CheckSquare className="w-4 h-4 text-indigo-400" />
+                  <span>Bulk Selection:</span>
+                </span>
+                <div
+                  id="button-group-csv-bulk-toggle"
+                  data-testid="button-group-csv-bulk-toggle"
+                  className="inline-flex items-center rounded-xl p-0.5 bg-zinc-900 border border-zinc-700 shadow-xs"
+                  role="group"
+                  aria-label="Bulk selection toggle buttons"
+                >
+                  <button
+                    type="button"
+                    id="btn-csv-select-all"
+                    data-testid="btn-csv-select-all"
+                    onClick={() => {
+                      const all = [...csvColumnOrder];
+                      setSelectedCsvMetrics(all);
+                      try {
+                        localStorage.setItem('enterprise_diagnostic_csv_columns', JSON.stringify(all));
+                      } catch (err) {}
+                    }}
+                    className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold cursor-pointer transition-colors shadow-xs flex items-center gap-1.5 active:scale-95"
+                    title="Select all columns for export"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>Select All</span>
+                  </button>
+                  <button
+                    type="button"
+                    id="btn-csv-deselect-all"
+                    data-testid="btn-csv-deselect-all"
+                    onClick={() => {
+                      setSelectedCsvMetrics([]);
+                      try {
+                        localStorage.setItem('enterprise_diagnostic_csv_columns', JSON.stringify([]));
+                      } catch (err) {}
+                    }}
+                    className="px-3 py-1.5 hover:bg-zinc-800 text-zinc-300 hover:text-white rounded-lg text-xs font-bold cursor-pointer transition-colors flex items-center gap-1.5 active:scale-95"
+                    title="Deselect all columns"
+                  >
+                    <X className="w-3.5 h-3.5 text-zinc-400" />
+                    <span>Deselect All</span>
+                  </button>
+                </div>
               </div>
-              <select
-                id="modal-select-csv-preset"
-                data-testid="modal-select-csv-preset"
-                aria-label="CSV Column Presets"
-                value={(() => {
-                  const isSameSet = (a: string[], b: string[]) => a.length === b.length && a.every(x => b.includes(x));
-                  if (isSameSet(selectedCsvMetrics, ['latency', 'totalRecords', 'cacheHit', 'queryCount', 'errorStatus', 'flags'])) return 'full';
-                  if (isSameSet(selectedCsvMetrics, ['latency', 'flags'])) return 'minimal';
-                  if (isSameSet(selectedCsvMetrics, ['latency', 'queryCount', 'flags'])) return 'performance';
-                  return '';
-                })()}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  let next: string[] = [];
-                  if (val === 'full') {
-                    next = ['latency', 'totalRecords', 'cacheHit', 'queryCount', 'errorStatus', 'flags'];
-                  } else if (val === 'minimal') {
-                    next = ['latency', 'flags'];
-                  } else if (val === 'performance') {
-                    next = ['latency', 'queryCount', 'flags'];
-                  }
-                  if (next.length > 0) {
-                    setSelectedCsvMetrics(next);
-                    try {
-                      localStorage.setItem('enterprise_diagnostic_csv_columns', JSON.stringify(next));
-                    } catch (err) {}
-                  }
-                }}
-                className="bg-zinc-900 border border-zinc-700 hover:border-indigo-500 focus:border-indigo-500 rounded-lg px-2.5 py-1 text-xs text-zinc-200 cursor-pointer shadow-xs"
-              >
-                <option value="" disabled>Select preset...</option>
-                <option value="full">Full Diagnostics (all columns)</option>
-                <option value="minimal">Minimal (latency and flags only)</option>
-                <option value="performance">Performance Focus (latency, query count, and flags)</option>
-              </select>
+
+              <div className="flex items-center gap-2 font-mono text-[11px] text-zinc-400">
+                <span className="px-2.5 py-0.5 rounded-full bg-zinc-900 border border-zinc-800">
+                  <strong className="text-white font-bold">{selectedCsvMetrics.length}</strong> of {csvColumnOrder.length} selected
+                </span>
+              </div>
             </div>
-            <div className="px-5 py-3 bg-zinc-950/40 border-b border-zinc-800 flex items-center gap-2">
+
+            {/* Export Configuration Profiles Section */}
+            <div className="px-5 py-3.5 bg-zinc-950/90 border-b border-zinc-800 space-y-2 text-xs">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5 font-bold text-zinc-200">
+                  <Bookmark className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Export Configuration Profiles:</span>
+                </div>
+                <select
+                  id="select-export-profile"
+                  data-testid="select-export-profile"
+                  aria-label="Select Export Configuration Profile"
+                  value={activeProfileId}
+                  onChange={(e) => {
+                    const prof = csvExportProfiles.find(p => p.id === e.target.value);
+                    if (prof) handleApplyProfile(prof);
+                  }}
+                  className="bg-zinc-900 border border-zinc-700 hover:border-indigo-500 focus:border-indigo-500 rounded-lg px-2.5 py-1 text-xs text-zinc-200 cursor-pointer shadow-xs max-w-[200px]"
+                >
+                  {csvExportProfiles.map(p => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} {p.isBuiltin ? '' : '(Custom)'}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Quick-switch profile badges */}
+              <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                {csvExportProfiles.map(p => {
+                  const isActive = activeProfileId === p.id;
+                  return (
+                    <div key={p.id} className="inline-flex items-center bg-zinc-900/80 rounded-lg p-0.5 border border-zinc-700/80">
+                      <button
+                        type="button"
+                        id={`btn-profile-${p.id}`}
+                        data-testid={`btn-profile-${p.id}`}
+                        onClick={() => handleApplyProfile(p)}
+                        className={`px-2 py-1 rounded text-[11px] font-semibold cursor-pointer transition-colors flex items-center gap-1 ${
+                          isActive
+                            ? 'bg-indigo-600 text-white shadow-xs font-bold'
+                            : 'text-zinc-300 hover:text-white hover:bg-zinc-800'
+                        }`}
+                        title={`Switch to profile: ${p.name} (${p.columns.length} columns: ${p.columns.join(', ')})`}
+                      >
+                        <Bookmark className="w-3 h-3 text-indigo-300" />
+                        <span>{p.name}</span>
+                      </button>
+                      {!p.isBuiltin && (
+                        <button
+                          type="button"
+                          id={`btn-delete-profile-${p.id}`}
+                          data-testid={`btn-delete-profile-${p.id}`}
+                          onClick={() => handleDeleteProfile(p.id)}
+                          className="px-1 py-0.5 text-zinc-400 hover:text-rose-400 cursor-pointer text-xs"
+                          title="Delete custom profile"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Save current setup as new profile */}
+              <div className="flex items-center gap-2 pt-2 border-t border-zinc-800/80">
+                <input
+                  type="text"
+                  id="input-new-profile-name"
+                  data-testid="input-new-profile-name"
+                  placeholder="Save current setup as new profile..."
+                  value={newProfileName}
+                  onChange={(e) => setNewProfileName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && newProfileName.trim()) {
+                      e.preventDefault();
+                      handleSaveProfile();
+                    }
+                  }}
+                  className="flex-1 bg-zinc-900 border border-zinc-700 rounded-lg px-2.5 py-1 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-indigo-500 font-mono"
+                />
+                <button
+                  type="button"
+                  id="btn-save-export-profile"
+                  data-testid="btn-save-export-profile"
+                  onClick={handleSaveProfile}
+                  disabled={!newProfileName.trim()}
+                  className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-lg text-[11px] font-bold cursor-pointer transition-colors flex items-center gap-1 shrink-0 shadow-xs"
+                >
+                  <Save className="w-3 h-3" />
+                  <span>Save Profile</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Search Input */}
+            <div className="px-5 py-2.5 bg-zinc-950/40 border-b border-zinc-800 flex items-center gap-2">
               <Search className="w-4 h-4 text-zinc-400 shrink-0" />
               <input
                 type="text"
@@ -3671,105 +4366,210 @@ export default function App() {
                 </button>
               )}
             </div>
-            <div className="px-5 py-2.5 bg-zinc-950/60 border-b border-zinc-800 flex items-center justify-between text-xs">
-              <span className="font-mono text-[11px] text-zinc-400">Bulk Operations:</span>
-              <div className="flex items-center gap-2">
+
+            {/* Bulk Operations & Reset Column Order Toolbar */}
+            {/* Column Order & Visibility Toolbar */}
+            <div className="px-5 py-2 bg-zinc-950/70 border-b border-zinc-800 flex items-center justify-between text-xs flex-wrap gap-2">
+              <span className="font-mono text-[11px] text-zinc-400">Column Operations:</span>
+              <div className="flex items-center gap-1.5">
                 <button
                   type="button"
-                  id="btn-csv-select-all"
-                  data-testid="btn-csv-select-all"
+                  id="btn-csv-select-all-secondary"
+                  data-testid="btn-csv-select-all-secondary"
                   onClick={() => {
-                    const all = ['latency', 'totalRecords', 'cacheHit', 'queryCount', 'errorStatus', 'flags'];
+                    const all = [...csvColumnOrder];
                     setSelectedCsvMetrics(all);
                     try {
                       localStorage.setItem('enterprise_diagnostic_csv_columns', JSON.stringify(all));
                     } catch (err) {}
                   }}
-                  className="px-2.5 py-1 bg-indigo-950/80 hover:bg-indigo-900 text-indigo-200 border border-indigo-500/50 rounded-lg text-[11px] font-bold cursor-pointer transition-colors shadow-xs"
+                  className="px-2.5 py-1 bg-indigo-950/80 hover:bg-indigo-900 text-indigo-200 border border-indigo-500/50 rounded-lg text-[11px] font-bold cursor-pointer transition-colors shadow-xs flex items-center gap-1"
+                  title="Select all columns"
                 >
-                  Select All
+                  <CheckCircle2 className="w-3 h-3 text-indigo-400" />
+                  <span>Select All</span>
                 </button>
                 <button
                   type="button"
-                  id="btn-csv-deselect-all"
-                  data-testid="btn-csv-deselect-all"
+                  id="btn-csv-deselect-all-secondary"
+                  data-testid="btn-csv-deselect-all-secondary"
                   onClick={() => {
                     setSelectedCsvMetrics([]);
                     try {
                       localStorage.setItem('enterprise_diagnostic_csv_columns', JSON.stringify([]));
                     } catch (err) {}
                   }}
-                  className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 rounded-lg text-[11px] font-bold cursor-pointer transition-colors shadow-xs"
+                  className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 rounded-lg text-[11px] font-bold cursor-pointer transition-colors shadow-xs flex items-center gap-1"
+                  title="Deselect all columns"
                 >
-                  Deselect All
+                  <X className="w-3 h-3 text-zinc-400" />
+                  <span>Deselect All</span>
+                </button>
+                <button
+                  type="button"
+                  id="btn-reset-column-order"
+                  data-testid="btn-reset-column-order"
+                  onClick={handleResetColumnOrder}
+                  className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-amber-300 border border-amber-500/40 hover:border-amber-400 rounded-lg text-[11px] font-bold cursor-pointer transition-colors shadow-xs flex items-center gap-1"
+                  title="Restore column sequence to the application default order"
+                >
+                  <RotateCcw className="w-3 h-3 text-amber-400" />
+                  <span>Reset Column Order</span>
                 </button>
               </div>
             </div>
-            <div className="p-5 space-y-3 max-h-[300px] overflow-y-auto">
-              {[
-                { id: 'latency', label: 'Execution Latency (ms)', desc: 'Query execution time and thresholds' },
-                { id: 'totalRecords', label: 'Total Records Scanned', desc: 'Row count scanned during execution' },
-                { id: 'cacheHit', label: 'Cache Hit Status', desc: 'Whether query result was served from cache' },
-                { id: 'queryCount', label: 'N+1 Cascaded Query Count', desc: 'Active child queries and cascade count' },
-                { id: 'errorStatus', label: 'System Error Status', desc: 'Active system errors or simulated faults' },
-                { id: 'flags', label: 'Optimization Flags State', desc: 'Boolean state of all engine flags' }
-              ]
-                .filter((item) => {
+
+            {/* Drag & Drop Reorderable Column List */}
+            <div className="p-5 space-y-2 max-h-[300px] overflow-y-auto">
+              <div className="text-[10px] text-zinc-400 font-mono mb-1 flex items-center justify-between">
+                <span>Drag items or use arrows to reorder sequence:</span>
+                <span>{selectedCsvMetrics.length} selected</span>
+              </div>
+              {(() => {
+                const columnMetaMap: Record<string, { label: string; desc: string }> = {
+                  latency: { label: 'Execution Latency (ms)', desc: 'Query execution time and thresholds' },
+                  totalRecords: { label: 'Total Records Scanned', desc: 'Row count scanned during execution' },
+                  cacheHit: { label: 'Cache Hit Status', desc: 'Whether query result was served from cache' },
+                  queryCount: { label: 'N+1 Cascaded Query Count', desc: 'Active child queries and cascade count' },
+                  errorStatus: { label: 'System Error Status', desc: 'Active system errors or simulated faults' },
+                  flags: { label: 'Optimization Flags State', desc: 'Boolean state of all engine flags' }
+                };
+
+                const filtered = csvColumnOrder.filter(id => {
                   if (!csvColumnsSearchQuery.trim()) return true;
                   const q = csvColumnsSearchQuery.toLowerCase().trim();
-                  return item.label.toLowerCase().includes(q) || item.desc.toLowerCase().includes(q) || item.id.toLowerCase().includes(q);
-                })
-                .map((item) => {
-                  const isSelected = selectedCsvMetrics.includes(item.id);
+                  const meta = columnMetaMap[id] || { label: id, desc: '' };
+                  return meta.label.toLowerCase().includes(q) || meta.desc.toLowerCase().includes(q) || id.toLowerCase().includes(q);
+                });
+
+                if (filtered.length === 0) {
                   return (
-                    <label
-                      key={item.id}
-                      className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
-                        isSelected
-                          ? 'bg-indigo-950/60 border-indigo-500/60 text-white shadow-xs'
+                    <div className="py-6 text-center text-zinc-500 text-xs font-mono">
+                      No metric columns matching "{csvColumnsSearchQuery}"
+                    </div>
+                  );
+                }
+
+                return filtered.map((id, index) => {
+                  const meta = columnMetaMap[id] || { label: id, desc: '' };
+                  const isSelected = selectedCsvMetrics.includes(id);
+                  const isDragging = draggedColumnId === id;
+                  const isDragOver = dragOverColumnId === id;
+
+                  return (
+                    <div
+                      key={id}
+                      id={`column-item-${id}`}
+                      data-testid={`column-item-${id}`}
+                      draggable={true}
+                      onDragStart={(e) => {
+                        e.dataTransfer.setData('text/plain', id);
+                        setDraggedColumnId(id);
+                      }}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = 'move';
+                        setDragOverColumnId(id);
+                      }}
+                      onDragLeave={() => {
+                        if (dragOverColumnId === id) setDragOverColumnId(null);
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        handleDropColumn(id);
+                      }}
+                      onDragEnd={() => {
+                        setDraggedColumnId(null);
+                        setDragOverColumnId(null);
+                      }}
+                      className={`flex items-center justify-between p-2.5 rounded-xl border transition-all ${
+                        isDragOver
+                          ? 'border-indigo-400 bg-indigo-950/80 ring-2 ring-indigo-500/60 scale-[1.01]'
+                          : isDragging
+                          ? 'opacity-40 border-indigo-400 border-dashed bg-zinc-950'
+                          : isSelected
+                          ? 'bg-indigo-950/50 border-indigo-500/60 text-white shadow-xs'
                           : 'bg-zinc-950/50 border-zinc-800 hover:border-zinc-700 text-zinc-300'
                       }`}
                     >
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={(e) => {
-                          const next = e.target.checked
-                            ? [...selectedCsvMetrics, item.id]
-                            : selectedCsvMetrics.filter((m) => m !== item.id);
-                          setSelectedCsvMetrics(next);
-                          try {
-                            localStorage.setItem('enterprise_diagnostic_csv_columns', JSON.stringify(next));
-                          } catch (err) {
-                            console.error(err);
-                          }
-                        }}
-                        className="mt-0.5 w-4 h-4 accent-indigo-500 rounded cursor-pointer"
-                      />
-                      <div className="space-y-0.5">
-                        <span className="font-bold text-xs block text-white">{item.label}</span>
-                        <span className="text-[11px] text-zinc-400 block leading-tight">{item.desc}</span>
+                      <div className="flex items-center gap-2.5 flex-1 min-w-0">
+                        {/* Drag Handle */}
+                        <div
+                          id={`btn-drag-column-${id}`}
+                          data-testid={`btn-drag-column-${id}`}
+                          className="cursor-grab active:cursor-grabbing text-zinc-500 hover:text-zinc-200 p-0.5"
+                          title="Drag up or down to reorder"
+                        >
+                          <GripVertical className="w-4 h-4" />
+                        </div>
+
+                        {/* Order Badge */}
+                        <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300 border border-zinc-700 shrink-0 font-bold">
+                          #{index + 1}
+                        </span>
+
+                        {/* Selection Checkbox */}
+                        <input
+                          type="checkbox"
+                          id={`checkbox-column-${id}`}
+                          data-testid={`checkbox-column-${id}`}
+                          checked={isSelected}
+                          onChange={(e) => {
+                            const next = e.target.checked
+                              ? [...selectedCsvMetrics, id]
+                              : selectedCsvMetrics.filter((m) => m !== id);
+                            setSelectedCsvMetrics(next);
+                            try {
+                              localStorage.setItem('enterprise_diagnostic_csv_columns', JSON.stringify(next));
+                            } catch (err) {
+                              console.error(err);
+                            }
+                          }}
+                          className="w-4 h-4 accent-indigo-500 rounded cursor-pointer shrink-0"
+                        />
+
+                        {/* Label & Description */}
+                        <label
+                          htmlFor={`checkbox-column-${id}`}
+                          className="space-y-0.5 cursor-pointer select-none truncate flex-1"
+                        >
+                          <span className="font-bold text-xs block text-white truncate">{meta.label}</span>
+                          <span className="text-[10px] text-zinc-400 block truncate">{meta.desc}</span>
+                        </label>
                       </div>
-                    </label>
+
+                      {/* Direction Move Buttons for Accessibility/Quick Click */}
+                      <div className="flex items-center gap-1 shrink-0 ml-2">
+                        <button
+                          type="button"
+                          id={`btn-move-up-${id}`}
+                          data-testid={`btn-move-up-${id}`}
+                          onClick={() => handleMoveColumn(id, 'up')}
+                          disabled={index === 0}
+                          className="p-1 bg-zinc-900 hover:bg-zinc-800 disabled:opacity-30 text-zinc-300 hover:text-white rounded border border-zinc-700 cursor-pointer transition-colors"
+                          title="Move column up"
+                        >
+                          <ArrowUp className="w-3 h-3" />
+                        </button>
+                        <button
+                          type="button"
+                          id={`btn-move-down-${id}`}
+                          data-testid={`btn-move-down-${id}`}
+                          onClick={() => handleMoveColumn(id, 'down')}
+                          disabled={index === filtered.length - 1}
+                          className="p-1 bg-zinc-900 hover:bg-zinc-800 disabled:opacity-30 text-zinc-300 hover:text-white rounded border border-zinc-700 cursor-pointer transition-colors"
+                          title="Move column down"
+                        >
+                          <ArrowDown className="w-3 h-3" />
+                        </button>
+                      </div>
+                    </div>
                   );
-                })}
-              {[
-                { id: 'latency', label: 'Execution Latency (ms)', desc: 'Query execution time and thresholds' },
-                { id: 'totalRecords', label: 'Total Records Scanned', desc: 'Row count scanned during execution' },
-                { id: 'cacheHit', label: 'Cache Hit Status', desc: 'Whether query result was served from cache' },
-                { id: 'queryCount', label: 'N+1 Cascaded Query Count', desc: 'Active child queries and cascade count' },
-                { id: 'errorStatus', label: 'System Error Status', desc: 'Active system errors or simulated faults' },
-                { id: 'flags', label: 'Optimization Flags State', desc: 'Boolean state of all engine flags' }
-              ].filter((item) => {
-                if (!csvColumnsSearchQuery.trim()) return true;
-                const q = csvColumnsSearchQuery.toLowerCase().trim();
-                return item.label.toLowerCase().includes(q) || item.desc.toLowerCase().includes(q) || item.id.toLowerCase().includes(q);
-              }).length === 0 && (
-                <div className="py-6 text-center text-zinc-500 text-xs font-mono">
-                  No metric columns matching "{csvColumnsSearchQuery}"
-                </div>
-              )}
+                });
+              })()}
             </div>
+
+            {/* Footer */}
             <div className="p-4 bg-zinc-950 border-t border-zinc-800 flex items-center justify-between">
               <div className="text-[11px] font-mono text-zinc-400">
                 {selectedCsvMetrics.length} of 6 metric columns selected
@@ -3777,23 +4577,30 @@ export default function App() {
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    const all = ['latency', 'totalRecords', 'cacheHit', 'queryCount', 'errorStatus', 'flags'];
-                    setSelectedCsvMetrics(all);
-                    try {
-                      localStorage.setItem('enterprise_diagnostic_csv_columns', JSON.stringify(all));
-                    } catch (err) {}
-                  }}
-                  className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs rounded-xl font-bold cursor-pointer transition-colors"
+                  id="btn-copy-csv-profile"
+                  data-testid="btn-copy-csv-profile"
+                  onClick={handleCopyProfileToClipboard}
+                  className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-indigo-300 text-xs rounded-xl font-bold cursor-pointer transition-colors flex items-center gap-1"
+                  title="Serialize current column selections and order into a shareable JSON string and copy to clipboard"
                 >
-                  Select All
+                  <Clipboard className="w-3 h-3" />
+                  <span>Copy Profile to Clipboard</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleResetColumnOrder}
+                  className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-amber-300 text-xs rounded-xl font-bold cursor-pointer transition-colors flex items-center gap-1"
+                  title="Reset column sequence to application default"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  <span>Reset Order</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => setIsCsvColumnsModalOpen(false)}
                   className="px-4 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-extrabold text-xs rounded-xl shadow cursor-pointer transition-all"
                 >
-                  Save & Close
+                  Save &amp; Close
                 </button>
               </div>
             </div>
@@ -3808,6 +4615,15 @@ export default function App() {
         onReDownload={handleReDownloadHistoryItem}
         onClearHistory={handleClearPdfHistory}
         onDeleteItem={handleDeletePdfHistoryItem}
+      />
+
+      <PdfExportSnapshotCompareModal
+        isOpen={isPdfSnapshotCompareModalOpen}
+        onClose={() => setIsPdfSnapshotCompareModalOpen(false)}
+        historyItems={pdfExportHistory}
+        currentFlags={flags}
+        currentLatency={queryResult.executionTimeMs}
+        currentN1Count={n1LogsCount}
       />
 
       {/* System Resource Monitor Widget */}

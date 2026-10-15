@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { X, FileText, Download, Share2, Trash2, Clock, Check, Search, AlertCircle, Database } from 'lucide-react';
 
+import { OptimizationFlags } from '../types';
+
 export interface DiagnosticPdfHistoryItem {
   id: string;
   title: string;
@@ -10,6 +12,8 @@ export interface DiagnosticPdfHistoryItem {
   executionTimeMs: number;
   fileSizeKB: number;
   summary: string;
+  flags?: OptimizationFlags;
+  n1LogsCount?: number;
 }
 
 interface DiagnosticExportHistoryModalProps {
