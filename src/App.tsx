@@ -24,7 +24,7 @@ import { VisualQueryBuilderModal } from './components/VisualQueryBuilderModal';
 import { LatencyLegend } from './components/LatencyLegend';
 import { HeatmapIntensityScale } from './components/HeatmapIntensityScale';
 import { ExportPreviewModal } from './components/ExportPreviewModal';
-import { AlertTriangle, X, Flame, Zap, BellOff, TrendingUp, FileText, Loader, Sparkles, Search, Clipboard, Pin, RotateCcw, FileSpreadsheet, Camera, FileJson, Brain, Layers, Sliders, Settings, Info, RefreshCw, Target, Share2, CheckCircle2, ArrowRight, GripVertical, Bookmark, Save, Trash2, ArrowUp, ArrowDown, CheckSquare, Volume2, GitCompare } from 'lucide-react';
+import { AlertTriangle, X, Flame, Zap, BellOff, TrendingUp, FileText, Loader, Sparkles, Search, Clipboard, Pin, RotateCcw, FileSpreadsheet, Camera, FileJson, Brain, Layers, Sliders, Settings, Info, RefreshCw, Target, Share2, CheckCircle2, ArrowRight, GripVertical, Bookmark, Save, Trash2, ArrowUp, ArrowDown, CheckSquare, Volume2, GitCompare, Link2 } from 'lucide-react';
 import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
 import {
   exportRecords,
@@ -1199,6 +1199,50 @@ export default function App() {
   };
   const [isCsvColumnsModalOpen, setIsCsvColumnsModalOpen] = useState(false);
   const [csvColumnsSearchQuery, setCsvColumnsSearchQuery] = useState('');
+  const [isCsvDeepLinkCopied, setIsCsvDeepLinkCopied] = useState(false);
+  const [lastGeneratedCsvDeepLink, setLastGeneratedCsvDeepLink] = useState<string | null>(null);
+
+  const handleGenerateCsvDeepLink = () => {
+    const configData = {
+      version: 1,
+      type: 'csv_columns_config',
+      selectedColumns: selectedCsvMetrics,
+      columnOrder: csvColumnOrder,
+      profileName: csvExportProfiles.find(p => p.id === activeProfileId)?.name || 'Custom Configuration',
+      timestamp: new Date().toISOString()
+    };
+    const jsonStr = JSON.stringify(configData);
+    const b64 = btoa(unescape(encodeURIComponent(jsonStr)));
+    const shareUrl = `${window.location.origin}${window.location.pathname}#csvConfig=${b64}`;
+
+    setLastGeneratedCsvDeepLink(shareUrl);
+    setIsCsvDeepLinkCopied(true);
+
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(shareUrl).catch(() => {});
+    } else {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = shareUrl;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch {}
+    }
+
+    setProactiveToast({
+      title: '🔗 CSV Export Deep-Link Generated!',
+      message: `Shareable URL containing ${selectedCsvMetrics.length} columns and sequence copied to clipboard. Other developers opening this link will replicate this exact export format.`
+    });
+
+    setTimeout(() => {
+      setIsCsvDeepLinkCopied(false);
+    }, 3500);
+    setTimeout(() => {
+      setProactiveToast(null);
+    }, 4500);
+  };
   const [isBannerPinned, setIsBannerPinned] = useState<boolean>(() => {
     try {
       return localStorage.getItem('enterprise_batch_banner_pinned') === 'true';
@@ -1651,39 +1695,108 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [shortcutToast]);
 
-  // Parse deep-link snapshot hash on mount
+  // Parse deep-links (CSV export columns configuration or snapshot) on mount and on hashchange
   useEffect(() => {
-    try {
-      const hash = window.location.hash;
-      if (hash && hash.includes('snapshot=')) {
-        const b64 = hash.split('snapshot=')[1];
-        if (b64) {
-          const jsonStr = decodeURIComponent(escape(atob(b64)));
-          const snapshot = JSON.parse(jsonStr);
-          if (snapshot) {
-            if (snapshot.flags) {
-              setFlags(prev => ({ ...prev, ...snapshot.flags }));
+    const parseUrlDeepLinks = () => {
+      try {
+        const hash = window.location.hash;
+        const search = window.location.search;
+
+        // 1. Check for CSV export column configuration deep link (#csvConfig= or ?csvConfig= or #csv_config=)
+        let csvB64: string | null = null;
+        if (hash && hash.includes('csvConfig=')) {
+          csvB64 = hash.split('csvConfig=')[1]?.split('&')[0];
+        } else if (search && search.includes('csvConfig=')) {
+          csvB64 = new URLSearchParams(search).get('csvConfig');
+        } else if (hash && hash.includes('csv_config=')) {
+          csvB64 = hash.split('csv_config=')[1]?.split('&')[0];
+        }
+
+        if (csvB64) {
+          try {
+            const jsonStr = decodeURIComponent(escape(atob(csvB64)));
+            const parsed = JSON.parse(jsonStr);
+            if (parsed) {
+              const cols = Array.isArray(parsed.selectedColumns)
+                ? parsed.selectedColumns
+                : Array.isArray(parsed.columns)
+                ? parsed.columns
+                : Array.isArray(parsed)
+                ? parsed
+                : null;
+
+              const order = Array.isArray(parsed.columnOrder)
+                ? parsed.columnOrder
+                : Array.isArray(parsed.order)
+                ? parsed.order
+                : null;
+
+              if (cols && Array.isArray(cols)) {
+                setSelectedCsvMetrics(cols);
+                try {
+                  localStorage.setItem('enterprise_diagnostic_csv_columns', JSON.stringify(cols));
+                } catch {}
+              }
+              if (order && Array.isArray(order)) {
+                setCsvColumnOrder(order);
+                try {
+                  localStorage.setItem('enterprise_diagnostic_csv_column_order', JSON.stringify(order));
+                } catch {}
+              } else if (cols && Array.isArray(cols)) {
+                const remaining = DEFAULT_CSV_COLUMNS.filter(id => !cols.includes(id));
+                const newOrder = [...cols, ...remaining];
+                setCsvColumnOrder(newOrder);
+                try {
+                  localStorage.setItem('enterprise_diagnostic_csv_column_order', JSON.stringify(newOrder));
+                } catch {}
+              }
+
+              const profileName = parsed.profileName || 'Replicated CSV Configuration';
+              setProactiveToast({
+                title: '📥 CSV Export Format Replicated!',
+                message: `Successfully loaded deep-link CSV columns: ${cols?.length || 0} active metrics (${profileName}). Ready for export.`
+              });
+              setTimeout(() => setProactiveToast(null), 5000);
             }
-            if (snapshot.thresholds) {
-              if (snapshot.thresholds.customLatencyThreshold) setCustomLatencyThreshold(snapshot.thresholds.customLatencyThreshold);
-              if (snapshot.thresholds.movingAverageTrendWindow) setMovingAverageTrendWindow(snapshot.thresholds.movingAverageTrendWindow);
-              if (snapshot.thresholds.anomalyThresholdSlope) setAnomalyThresholdSlope(snapshot.thresholds.anomalyThresholdSlope);
-            }
-            if (snapshot.trendHistory && Array.isArray(snapshot.trendHistory)) {
-              setTrendHistory(snapshot.trendHistory);
-            }
-            setProactiveToast({
-              title: '📥 Snapshot Loaded from Deep-Link',
-              description: 'Successfully restored bottleneck flags, anomaly thresholds, and trend state from developer snapshot.',
-              type: 'success'
-            });
-            setTimeout(() => setProactiveToast(null), 5000);
+          } catch (e) {
+            console.error('Failed to parse CSV config deep-link:', e);
           }
         }
+
+        // 2. Check for snapshot deep-link (#snapshot=)
+        if (hash && hash.includes('snapshot=')) {
+          const b64 = hash.split('snapshot=')[1]?.split('&')[0];
+          if (b64) {
+            const jsonStr = decodeURIComponent(escape(atob(b64)));
+            const snapshot = JSON.parse(jsonStr);
+            if (snapshot) {
+              if (snapshot.flags) {
+                setFlags(prev => ({ ...prev, ...snapshot.flags }));
+              }
+              if (snapshot.thresholds) {
+                if (snapshot.thresholds.customLatencyThreshold) setCustomLatencyThreshold(snapshot.thresholds.customLatencyThreshold);
+                if (snapshot.thresholds.movingAverageTrendWindow) setMovingAverageTrendWindow(snapshot.thresholds.movingAverageTrendWindow);
+                if (snapshot.thresholds.anomalyThresholdSlope) setAnomalyThresholdSlope(snapshot.thresholds.anomalyThresholdSlope);
+              }
+              if (snapshot.trendHistory && Array.isArray(snapshot.trendHistory)) {
+                setTrendHistory(snapshot.trendHistory);
+              }
+              setProactiveToast({
+                title: '📥 Snapshot Loaded from Deep-Link',
+                message: 'Successfully restored bottleneck flags, anomaly thresholds, and trend state from developer snapshot.'
+              });
+              setTimeout(() => setProactiveToast(null), 5000);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Failed to parse URL deep link hash:', err);
       }
-    } catch (err) {
-      console.error('Failed to parse snapshot hash:', err);
-    }
+    };
+
+    parseUrlDeepLinks();
+    window.addEventListener('hashchange', parseUrlDeepLinks);
+    return () => window.removeEventListener('hashchange', parseUrlDeepLinks);
   }, []);
 
   const handleRunOptimizationSequence = () => {
@@ -1783,13 +1896,43 @@ export default function App() {
   const prevN1CountRef = useRef<number>(n1LogsCount);
   const [panelShakeGlowTrigger, setPanelShakeGlowTrigger] = useState<boolean>(false);
 
+  const handleAddSimulatedN1Log = () => {
+    const now = Date.now();
+    const newEntry: SerializationLogEntry = {
+      id: `log-n1-cascade-${now}-${Math.random().toString(36).slice(2, 6)}`,
+      timestamp: now,
+      timeFormatted: new Date(now).toTimeString().split(' ')[0],
+      severity: 'anomaly',
+      type: 'N+1_QUERY_CASCADE' as any,
+      format: 'query',
+      recordCount: 50000,
+      message: `Critical N+1 Query Cascade: Fired 101 unbatched subqueries against line_items (${n1LogsCount + 1} total events).`,
+      details: {
+        throughputRowsPerSec: 1050,
+        baselineThroughput: 18000,
+        durationMs: 470,
+        baselineDurationMs: 12.4,
+        activeQueriesCount: 101,
+        cpuUsagePercent: 88,
+        cause: 'Disabled batchEagerLoading caused unbatched sequential roundtrips for each parent row.',
+        triggerSource: 'Simulated Fault Injection'
+      }
+    };
+    setSerializationLogs(prev => [newEntry, ...prev]);
+  };
+
   useEffect(() => {
+    let timer: NodeJS.Timeout | undefined;
     if (n1LogsCount > prevN1CountRef.current) {
       setIsBadgeBreathing(true);
-      const timer = setTimeout(() => setIsBadgeBreathing(false), 900);
-      return () => clearTimeout(timer);
+      timer = setTimeout(() => {
+        setIsBadgeBreathing(false);
+      }, 1600);
     }
     prevN1CountRef.current = n1LogsCount;
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
   }, [n1LogsCount]);
 
   const prevN1RatioRef = useRef<number>(0);
@@ -2830,17 +2973,31 @@ export default function App() {
                       handleViewSerializationLogs();
                       setPanelShakeGlowTrigger(prev => !prev);
                     }}
-                    className={`font-mono text-[11px] bg-rose-950/90 border text-rose-200 px-3 py-1.5 rounded-xl font-bold flex flex-col items-center justify-center gap-1 hover:bg-rose-900 hover:text-white transition-colors cursor-pointer shadow-xs min-w-[210px] ${
+                    className={`font-mono text-[11px] bg-rose-950/90 border text-rose-200 px-3 py-1.5 rounded-xl font-bold flex flex-col items-center justify-center gap-1 hover:bg-rose-900 hover:text-white transition-all cursor-pointer shadow-xs min-w-[210px] ${
                       isBadgeBreathing
-                        ? 'animate-badge-breathing border-rose-300 ring-2 ring-rose-500/50'
+                        ? 'animate-badge-breathing border-rose-300 ring-2 ring-rose-500/60 shadow-[0_0_18px_rgba(244,63,94,0.6)]'
                         : 'border-rose-500/60'
                     }`}
+                    data-breathing={isBadgeBreathing ? 'true' : undefined}
+                    data-is-breathing={isBadgeBreathing ? 'true' : undefined}
+                    data-animating={isBadgeBreathing ? 'breathing' : undefined}
                     title={`Click or press Ctrl+N while banner is focused to filter and scroll directly to active N+1 cascade log entries\nN+1 Intensity: ${n1LogsCount}/${(serializationLogs || []).length || 1} logs (${Math.round((n1LogsCount / Math.max(1, (serializationLogs || []).length || 1)) * 100)}%)`}
                   >
                     <div className="flex items-center gap-1.5 w-full justify-between">
                       <div className="flex items-center gap-1.5">
-                        <Layers className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                        <Layers className={`w-3.5 h-3.5 text-rose-400 shrink-0 ${isBadgeBreathing ? 'animate-bounce text-rose-300' : ''}`} />
                         <span>Active N+1 Cascade Logs: <strong className="text-white underline">{n1LogsCount}</strong></span>
+                        {isBadgeBreathing && (
+                          <span
+                            id="indicator-n1-new-event"
+                            data-testid="indicator-n1-new-event"
+                            className="relative flex h-2 w-2 ml-0.5"
+                            title="New N+1 event recorded"
+                          >
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
+                          </span>
+                        )}
                       </div>
                       <div className="flex items-center gap-1">
                         <span className="text-rose-400">→</span>
@@ -2923,6 +3080,17 @@ export default function App() {
                     title="View serialization and N+1 cascade error logs"
                   >
                     <span>View Serialization Logs →</span>
+                  </button>
+                  <button
+                    type="button"
+                    id="btn-simulate-n1-event"
+                    data-testid="btn-simulate-n1-event"
+                    onClick={handleAddSimulatedN1Log}
+                    className="text-[11px] font-mono font-bold text-rose-300 hover:text-white bg-rose-950/60 hover:bg-rose-900 border border-rose-500/40 px-2 py-0.5 rounded-lg transition-all cursor-pointer flex items-center gap-1 shadow-xs active:scale-95"
+                    title="Simulate a new unbatched N+1 child query cascade event to trigger telemetry and badge breathing pulse animation"
+                  >
+                    <Flame className="w-3 h-3 text-rose-400" />
+                    <span>+ Simulate N+1 Event</span>
                   </button>
                   <button
                     type="button"
@@ -4021,13 +4189,14 @@ export default function App() {
                 }
                 onClearLogs={() => setSerializationLogs([])}
                 onDismissLog={(id) => setSerializationLogs((prev) => prev.filter((l) => l.id !== id))}
-                onSimulateFault={() => {}}
+                onSimulateFault={handleAddSimulatedN1Log}
                 currentFormat="csv"
                 currentRecordCount={queryResult.totalCount || 50000}
                 alertThresholdMs={alertThresholdMs}
                 records={queryResult.records}
                 flags={flags}
                 showOnlyN1Logs={showOnlyN1Logs}
+                onToggleShowOnlyN1Logs={handleToggleShowOnlyN1Logs}
                 autoExpandLogId={autoExpandLogId}
                 shakeGlowTrigger={panelShakeGlowTrigger}
               />
@@ -4239,10 +4408,32 @@ export default function App() {
                     <X className="w-3.5 h-3.5 text-zinc-400" />
                     <span>Deselect All</span>
                   </button>
+                  <button
+                    type="button"
+                    id="btn-reset-column-order-top"
+                    data-testid="btn-reset-column-order-top"
+                    onClick={handleResetColumnOrder}
+                    className="px-2.5 py-1.5 hover:bg-zinc-800 text-amber-300 hover:text-amber-200 rounded-lg text-xs font-bold cursor-pointer transition-colors flex items-center gap-1.5 active:scale-95 border-l border-zinc-700/60"
+                    title="Restore column sequence to the application default order"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Reset Column Order</span>
+                  </button>
                 </div>
               </div>
 
               <div className="flex items-center gap-2 font-mono text-[11px] text-zinc-400">
+                <button
+                  type="button"
+                  id="btn-share-csv-deep-link-top"
+                  data-testid="btn-share-csv-deep-link-top"
+                  onClick={handleGenerateCsvDeepLink}
+                  className="px-2.5 py-1 bg-zinc-900 hover:bg-indigo-950 text-indigo-300 hover:text-white border border-indigo-500/40 rounded-lg text-xs font-bold cursor-pointer transition-colors shadow-xs flex items-center gap-1.5 active:scale-95"
+                  title="Generate a shareable deep-link URL containing currently active CSV columns"
+                >
+                  <Link2 className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Share Deep-Link</span>
+                </button>
                 <span className="px-2.5 py-0.5 rounded-full bg-zinc-900 border border-zinc-800">
                   <strong className="text-white font-bold">{selectedCsvMetrics.length}</strong> of {csvColumnOrder.length} selected
                 </span>
@@ -4367,6 +4558,65 @@ export default function App() {
               )}
             </div>
 
+            {/* Shareable Deep-Link URL Banner (shown when generated) */}
+            {lastGeneratedCsvDeepLink && (
+              <div
+                id="banner-csv-deep-link-url"
+                data-testid="banner-csv-deep-link-url"
+                className="mx-5 my-2.5 p-3 bg-indigo-950/70 border border-indigo-500/50 rounded-xl flex items-center gap-2.5 text-xs animate-fadeIn"
+              >
+                <div className="p-1.5 bg-indigo-600/30 border border-indigo-500/40 rounded-lg text-indigo-300 shrink-0">
+                  <Link2 className="w-4 h-4" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-bold text-indigo-200">Shareable Column Configuration Deep-Link:</span>
+                    <span className="text-[10px] text-emerald-400 font-mono flex items-center gap-1">
+                      <CheckCircle2 className="w-3 h-3" /> Copied to clipboard
+                    </span>
+                  </div>
+                  <input
+                    type="text"
+                    readOnly
+                    id="input-csv-deep-link-url"
+                    data-testid="input-csv-deep-link-url"
+                    value={lastGeneratedCsvDeepLink}
+                    onClick={(e) => (e.target as HTMLInputElement).select()}
+                    className="w-full bg-zinc-900 border border-zinc-700 hover:border-indigo-500 rounded-lg px-2.5 py-1 text-[11px] font-mono text-zinc-200 focus:outline-none focus:border-indigo-400 mt-1 select-all cursor-pointer"
+                    title="Click to select full URL"
+                  />
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    id="btn-copy-csv-deep-link-banner"
+                    data-testid="btn-copy-csv-deep-link-banner"
+                    onClick={() => {
+                      if (navigator.clipboard?.writeText) {
+                        navigator.clipboard.writeText(lastGeneratedCsvDeepLink);
+                      }
+                      setIsCsvDeepLinkCopied(true);
+                      setTimeout(() => setIsCsvDeepLinkCopied(false), 2500);
+                    }}
+                    className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold cursor-pointer transition-colors shadow-xs"
+                    title="Copy deep-link to clipboard again"
+                  >
+                    Copy
+                  </button>
+                  <button
+                    type="button"
+                    id="btn-close-csv-deep-link-banner"
+                    data-testid="btn-close-csv-deep-link-banner"
+                    onClick={() => setLastGeneratedCsvDeepLink(null)}
+                    className="p-1 text-zinc-400 hover:text-white cursor-pointer rounded-lg hover:bg-zinc-800"
+                    title="Dismiss link banner"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Bulk Operations & Reset Column Order Toolbar */}
             {/* Column Order & Visibility Toolbar */}
             <div className="px-5 py-2 bg-zinc-950/70 border-b border-zinc-800 flex items-center justify-between text-xs flex-wrap gap-2">
@@ -4407,10 +4657,10 @@ export default function App() {
                 </button>
                 <button
                   type="button"
-                  id="btn-reset-column-order"
-                  data-testid="btn-reset-column-order"
+                  id="btn-reset-column-order-toolbar"
+                  data-testid="btn-reset-column-order-toolbar"
                   onClick={handleResetColumnOrder}
-                  className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-amber-300 border border-amber-500/40 hover:border-amber-400 rounded-lg text-[11px] font-bold cursor-pointer transition-colors shadow-xs flex items-center gap-1"
+                  className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-amber-300 border border-amber-500/40 hover:border-amber-400 rounded-lg text-[11px] font-bold cursor-pointer transition-colors shadow-xs flex items-center gap-1 active:scale-95"
                   title="Restore column sequence to the application default order"
                 >
                   <RotateCcw className="w-3 h-3 text-amber-400" />
@@ -4577,6 +4827,30 @@ export default function App() {
               <div className="flex items-center gap-2">
                 <button
                   type="button"
+                  id="btn-share-csv-deep-link"
+                  data-testid="btn-share-csv-deep-link"
+                  onClick={handleGenerateCsvDeepLink}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold cursor-pointer transition-all flex items-center gap-1.5 shadow-xs active:scale-95 ${
+                    isCsvDeepLinkCopied
+                      ? 'bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-400'
+                      : 'bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 hover:text-white border border-indigo-500/50'
+                  }`}
+                  title="Generate a shareable deep-link URL containing the currently active CSV column configuration, allowing other developers to replicate the same export format"
+                >
+                  {isCsvDeepLinkCopied ? (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300" />
+                      <span>Deep-Link Copied!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Link2 className="w-3.5 h-3.5 text-indigo-300" />
+                      <span>Share Deep-Link URL</span>
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
                   id="btn-copy-csv-profile"
                   data-testid="btn-copy-csv-profile"
                   onClick={handleCopyProfileToClipboard}
@@ -4588,12 +4862,14 @@ export default function App() {
                 </button>
                 <button
                   type="button"
+                  id="btn-reset-column-order"
+                  data-testid="btn-reset-column-order"
                   onClick={handleResetColumnOrder}
-                  className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-amber-300 text-xs rounded-xl font-bold cursor-pointer transition-colors flex items-center gap-1"
-                  title="Reset column sequence to application default"
+                  className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-amber-300 border border-amber-500/40 hover:border-amber-400 text-xs rounded-xl font-bold cursor-pointer transition-all flex items-center gap-1.5 shadow-xs active:scale-95"
+                  title="Restore column sequence to the application default order"
                 >
-                  <RotateCcw className="w-3 h-3" />
-                  <span>Reset Order</span>
+                  <RotateCcw className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Reset Column Order</span>
                 </button>
                 <button
                   type="button"

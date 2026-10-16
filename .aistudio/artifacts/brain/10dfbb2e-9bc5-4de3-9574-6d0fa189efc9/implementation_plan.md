@@ -10,16 +10,41 @@ This implementation plan details the addition of a clickable N+1 log count badge
 - **Configure CSV Columns Modal Search Filter**:
   - Add a clean search input field at the top of the 'Configure CSV Columns' modal.
   - Instantly filters available metric columns as the user types by name or description.
+- **CSV Column Configuration Shareable Deep-Link**:
+  - Add a dedicated button (`#btn-share-csv-deep-link`) in the Configure CSV Columns modal.
+  - Generates a base64-encoded URL containing active column selections, custom sequence, and active profile metadata (`#csvConfig=...`).
+  - Auto-copies the link to clipboard with visual copy feedback.
+  - Listens for incoming deep-link parameters on mount and hashchange to replicate configuration across developer sessions.
+- **Reset Column Order Action**:
+  - Add 'Reset Column Order' buttons (`#btn-reset-column-order` in the modal footer and `#btn-reset-column-order-top` in the bulk selection toolbar).
+  - Restores the diagnostic column sequence to the application default order (`latency` -> `totalRecords` -> `cacheHit` -> `queryCount` -> `errorStatus` -> `flags`), clearing unintended drag-and-drop rearrangements.
+  - Persists the restored default sequence to local storage and alerts user via confirmation toast.
+- **Export Only N+1 Logs Action**:
+  - Add 'Export Only N+1 Logs' button (`#btn-export-only-n1-logs`) in the `SerializationErrorLogPanel` header.
+  - Automatically filters the log view to N+1 cascade entries and triggers a download of a specialized JSON export (`n1_cascade_logs_export_<timestamp>.json`).
+  - The export includes full N+1 telemetry, summary statistics (total unbatched subqueries, average cascade latency), optimization flag context, and top N+1 query patterns.
+- **Filter by Severity Header Dropdown**:
+  - Add a dedicated 'Filter by Severity' dropdown (`#select-severity-filter`, wrapper `#filter-by-severity-dropdown`) in the `SerializationErrorLogPanel` header.
+  - Supports toggling between 'All', 'Error', 'Anomaly', and 'Warning' severity levels with instantaneous log view filtering and synchronization with the errors tab filter state.
+- **Copy Log Summary Action**:
+  - Add 'Copy Summary' button (`#btn-copy-log-summary`) in the `SerializationErrorLogPanel` header.
+  - Formats a concise, structured text-based summary of current logs (total N+1 counts, percentage of workload, 10-minute density/frequency, most impacted tables/components, and active engine optimization flags) and copies it to the system clipboard with visual confirmation feedback.
 
 ## 2. User Experience & Visual Design
 
-- **N+1 Log Count Badge**:
-  - Styled as an interactive pill/button within the latency alert banner (`bg-rose-800/80 hover:bg-rose-700 text-rose-100 border border-rose-400/50`).
-  - Displays icon (`Layers` or `AlertTriangle`) and label e.g., `⚡ 3 N+1 Cascade Logs`.
-  - On click, executes smooth scroll (`scrollIntoView({ behavior: 'smooth' })`) to the serialization log component and flashes/highlights it.
+- **N+1 Log Count Badge & Breathing Pulse Animation**:
+  - Styled as an interactive pill/button within the latency alert banner (`bg-rose-950/90 text-rose-200 border-rose-500/60`).
+  - Displays icon (`Layers`) and active cascade count with 15-minute density histogram.
+  - On log count increase, triggers a subtle 'breathing' pulse animation (`.animate-badge-breathing`) featuring smooth cubic-bezier scaling (1.0 -> 1.06 -> 1.0) and glowing rose box-shadow, alongside an animated ping dot indicator.
+  - On click, executes smooth scroll (`scrollIntoView({ behavior: 'smooth' })`) to the serialization log component and triggers a shake-and-glow effect.
 - **Configure CSV Columns Search Input**:
   - Search box with search icon (`Search`), placeholder `"Search metric columns..."`, and clear button (`X`).
   - Filtered list items maintain smooth transition and keyboard accessibility.
+- **Share Deep-Link URL Button & Banner**:
+  - Prominent button (`#btn-share-csv-deep-link`) in the modal footer with `Link2` icon and interactive feedback states.
+  - Interactive deep-link banner (`#banner-csv-deep-link-url`) with read-only select-all input and quick copy button.
+  - Quick share link button in the bulk toolbar (`#btn-share-csv-deep-link-top`).
+  - Toast confirmation notifying developers of successful deep-link creation and replicated configurations upon loading.
 
 ## 3. Technical Architecture & Component Mapping
 
@@ -28,6 +53,8 @@ This implementation plan details the addition of a clickable N+1 log count badge
 │ App.tsx State & Handlers                               │
 │ - n1LogsCount calculation                              │
 │ - handleScrollToSerializationLogs()                    │
+│ - handleGenerateCsvDeepLink()                          │
+│ - parseUrlDeepLinks() listener on hashchange / mount   │
 └──────────────────────────┬─────────────────────────────┘
                            │
        ┌───────────────────┴───────────────────┐
@@ -37,6 +64,8 @@ This implementation plan details the addition of a clickable N+1 log count badge
 │ (#banner-batch-eager-loading-│    │ - Search input state         │
 │  latency)                    │    │ - Filtered columns list      │
 │ - Clickable N+1 logs badge   │    │ - Select / Deselect All      │
+│                              │    │ - Share Deep-Link Button     │
+│                              │    │ - Deep-Link Banner & URL     │
 └──────────────────────────────┘    └──────────────────────────────┘
 ```
 
@@ -46,6 +75,6 @@ This implementation plan details the addition of a clickable N+1 log count badge
   - Run `npm run lint` (`tsc --noEmit`) to verify zero TypeScript errors.
   - Run `compile_applet` to verify successful Vite build.
 - **Manual Verification**:
-  - Verify N+1 log count badge appears in `#banner-batch-eager-loading-latency` when `n1LogsCount > 0`.
-  - Click the badge and confirm smooth scroll to the Serialization Error Log Panel.
-  - Open 'Configure CSV Columns' modal, type in search filter, and confirm list updates instantly.
+  - Open 'Configure CSV Columns' modal and click 'Share Deep-Link URL'.
+  - Verify deep-link URL is copied to clipboard and visible in the link banner.
+  - Navigate to or load the generated `#csvConfig=...` URL in the browser and verify the active CSV columns and ordering are accurately restored with a success toast notification.

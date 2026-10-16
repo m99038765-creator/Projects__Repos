@@ -61,6 +61,7 @@ interface SerializationErrorLogPanelProps {
     [key: string]: any;
   };
   showOnlyN1Logs?: boolean;
+  onToggleShowOnlyN1Logs?: (show: boolean) => void;
   autoExpandLogId?: string;
   shakeGlowTrigger?: boolean;
 }
@@ -189,12 +190,21 @@ export const SerializationErrorLogPanel: React.FC<SerializationErrorLogPanelProp
   records = [],
   flags = {},
   showOnlyN1Logs = false,
+  onToggleShowOnlyN1Logs,
   autoExpandLogId,
   shakeGlowTrigger = false
 }) => {
   const safeLogs = logs || [];
   const safeRecords = records || [];
   const alertThreshold = alertThresholdMs || 100;
+
+  const [localShowOnlyN1, setLocalShowOnlyN1] = useState<boolean>(showOnlyN1Logs);
+
+  useEffect(() => {
+    setLocalShowOnlyN1(showOnlyN1Logs);
+  }, [showOnlyN1Logs]);
+
+  const effectiveShowOnlyN1 = showOnlyN1Logs || localShowOnlyN1;
 
   const [isExpanded, setIsExpanded] = useState<boolean>(true);
   const [activeMainTab, setActiveMainTab] = useState<'errors' | 'lifecycle' | 'reasoning' | 'outliers'>('errors');
@@ -344,10 +354,10 @@ export const SerializationErrorLogPanel: React.FC<SerializationErrorLogPanelProp
         String(log.message).toUpperCase().includes('N+1') ||
         String(log.details?.cause || '').toUpperCase().includes('N+1') ||
         String(log.details?.triggerSource || '').toUpperCase().includes('N+1');
-      const matchesN1 = !showOnlyN1Logs || isN1Log;
+      const matchesN1 = !effectiveShowOnlyN1 || isN1Log;
       return matchesSeverity && matchesFormat && matchesN1;
     });
-  }, [safeLogs, severityFilter, formatFilter, showOnlyN1Logs]);
+  }, [safeLogs, severityFilter, formatFilter, effectiveShowOnlyN1]);
 
   // Filtered entries for Optimization Lifecycle tab
   const filteredLifecycleEvents = useMemo(() => {
@@ -637,6 +647,144 @@ export const SerializationErrorLogPanel: React.FC<SerializationErrorLogPanelProp
     URL.revokeObjectURL(url);
   };
 
+  const handleExportOnlyN1Logs = () => {
+    // 1. Filter current logs to only N+1 related entries
+    const n1Subset = safeLogs.filter((log) =>
+      String(log.type).toUpperCase().includes('N+1') ||
+      String(log.type).toUpperCase().includes('N_PLUS_ONE') ||
+      String(log.severity).toUpperCase().includes('N+1') ||
+      String(log.message).toUpperCase().includes('N+1') ||
+      String(log.details?.cause || '').toUpperCase().includes('N+1') ||
+      String(log.details?.triggerSource || '').toUpperCase().includes('N+1')
+    );
+
+    // Apply the N+1 filter in the panel view
+    setLocalShowOnlyN1(true);
+    if (onToggleShowOnlyN1Logs) {
+      onToggleShowOnlyN1Logs(true);
+    }
+    setActiveMainTab('errors');
+
+    // 2. Build specialized JSON telemetry export for N+1 subset
+    const totalSubqueries = n1Subset.reduce((acc, log) => acc + (log.details?.activeQueriesCount || 0), 0);
+    const avgLatency = n1Subset.length > 0
+      ? (n1Subset.reduce((acc, log) => acc + (log.details?.durationMs || 0), 0) / n1Subset.length).toFixed(1)
+      : '0.0';
+
+    const specializedExportData = {
+      exportType: 'N+1_SPECIALIZED_TELEMETRY_EXPORT',
+      reportTitle: 'Specialized N+1 Query Cascade Diagnostic Log Export',
+      filterCriteria: 'N+1 Query Cascades and Relational Child Lookups Only',
+      exportedAt: new Date().toISOString(),
+      timestamp: Date.now(),
+      summary: {
+        totalN1LogEntries: n1Subset.length,
+        totalUnbatchedSubqueries: totalSubqueries,
+        averageCascadeLatencyMs: parseFloat(avgLatency),
+        recommendedOptimization: 'batchEagerLoading',
+        batchEagerLoadingActive: Boolean((flags as any)?.batchEagerLoading)
+      },
+      n1Logs: n1Subset,
+      topN1Patterns: top3N1Patterns.map(p => ({
+        rank: p.rank,
+        name: p.name,
+        querySql: p.querySql,
+        relationship: p.relationship,
+        occurrenceCount: p.occurrenceCount,
+        trafficSharePercentage: `${p.percentage}%`,
+        avgLatencyMs: p.avgLatencyMs,
+        recommendedFix: p.recommendedFix
+      }))
+    };
+
+    // 3. Trigger JSON file download
+    const blob = new Blob([JSON.stringify(specializedExportData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `n1_cascade_logs_export_${Date.now()}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    setLifecycleToast(`Filtered view to ${n1Subset.length} N+1 entries and exported specialized JSON report.`);
+    setTimeout(() => setLifecycleToast(null), 3500);
+  };
+
+  const [isSummaryCopied, setIsSummaryCopied] = useState<boolean>(false);
+
+  const handleCopyLogSummary = () => {
+    const n1Logs = safeLogs.filter((log) =>
+      String(log.type).toUpperCase().includes('N+1') ||
+      String(log.type).toUpperCase().includes('N_PLUS_ONE') ||
+      String(log.severity).toUpperCase().includes('N+1') ||
+      String(log.message).toUpperCase().includes('N+1') ||
+      String(log.details?.cause || '').toUpperCase().includes('N+1') ||
+      String(log.details?.triggerSource || '').toUpperCase().includes('N+1')
+    );
+
+    const totalLogs = safeLogs.length;
+    const n1Percentage = totalLogs > 0 ? ((n1Logs.length / totalLogs) * 100).toFixed(1) : '0.0';
+    const totalSubqueries = n1Logs.reduce((acc, log) => acc + (log.details?.activeQueriesCount || (log.message.includes('101') ? 101 : 1)), 0);
+    const avgDuration = n1Logs.length > 0
+      ? (n1Logs.reduce((acc, log) => acc + (log.details?.durationMs || 0), 0) / n1Logs.length).toFixed(1)
+      : '0.0';
+
+    // Calculate frequency over 10-minute density window
+    const logsInLast10m = n1DensityBuckets.buckets.reduce((a, b) => a + b, 0);
+    const frequencyPerMin = (logsInLast10m / 10).toFixed(1);
+
+    // Formulate most impacted components breakdown from top3N1Patterns
+    const impactedComponentsText = top3N1Patterns.map((p, idx) => {
+      return `${idx + 1}. Table: "${p.table}" (Relationship: ${p.relationship})
+   - Component / Query Pattern: ${p.name}
+   - Cascaded Subqueries Fired: ${p.occurrenceCount} (${p.percentage}% of N+1 cascade traffic)
+   - Average Query Latency: ${p.avgLatencyMs}ms
+   - Recommended Resolution: ${p.recommendedFix}`;
+    }).join('\n\n');
+
+    const summaryText = `=== Serialization Error Log & N+1 Cascade Diagnostics Summary ===
+Timestamp: ${new Date().toISOString()}
+
+1. TOTAL N+1 LOG COUNT & WORKLOAD IMPACT:
+- Total Diagnostic Error Logs: ${totalLogs}
+- Active N+1 Cascade Logs: ${n1Logs.length} (${n1Percentage}% of all error/anomaly logs)
+- Total Cascaded Unbatched Subqueries: ${totalSubqueries} child queries
+- Average N+1 Cascade Latency: ${avgDuration}ms
+
+2. FREQUENCY & DENSITY METRICS:
+- 10-Minute Frequency: ${frequencyPerMin} N+1 events/min (${logsInLast10m} events detected in 10-minute window)
+- Telemetry Occurrence Rate: ${n1Percentage}% of total serialization logs
+
+3. MOST IMPACTED COMPONENTS & RELATIONSHIPS:
+${impactedComponentsText || 'No severe table bottlenecks detected.'}
+
+4. ACTIVE ENGINE OPTIMIZATIONS:
+- Batch Eager Loading: ${Boolean((flags as any)?.batchEagerLoading) ? 'ENABLED' : 'DISABLED (Recommended: ENABLE to eliminate subquery cascade)'}
+- B-Tree Indexing: ${Boolean((flags as any)?.btreeIndexing) ? 'ENABLED' : 'DISABLED'}
+- Query Caching: ${Boolean((flags as any)?.queryCaching) ? 'ENABLED' : 'DISABLED'}
+==================================================================`;
+
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(summaryText).catch(() => {});
+    } else {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = summaryText;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch {}
+    }
+
+    setIsSummaryCopied(true);
+    setLifecycleToast('Concise N+1 log summary copied to clipboard!');
+    setTimeout(() => setIsSummaryCopied(false), 3000);
+    setTimeout(() => setLifecycleToast(null), 3500);
+  };
+
   const handleSimulateLifecycle = (action: LifecycleActionType) => {
     let newEv: OptimizationLifecycleEvent;
     const ts = Date.now();
@@ -900,6 +1048,37 @@ export const SerializationErrorLogPanel: React.FC<SerializationErrorLogPanelProp
 
         {/* Global Action Controls */}
         <div className="flex items-center gap-1.5 ml-auto sm:ml-0 flex-wrap">
+          {/* Filter by Severity Dropdown */}
+          <div
+            id="filter-by-severity-dropdown"
+            data-testid="filter-by-severity-dropdown"
+            className="inline-flex items-center gap-1.5 bg-white border border-zinc-200 px-2 py-1 rounded-md text-xs shadow-2xs mr-1"
+          >
+            <Filter className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+            <label
+              htmlFor="select-severity-filter"
+              className="text-[11px] font-semibold text-zinc-700 whitespace-nowrap"
+            >
+              Filter by Severity:
+            </label>
+            <select
+              id="select-severity-filter"
+              data-testid="select-severity-filter"
+              aria-label="Filter by Severity"
+              value={severityFilter}
+              onChange={(e) => {
+                setSeverityFilter(e.target.value as SerializationLogSeverity | 'all');
+                setActiveMainTab('errors');
+              }}
+              className="bg-zinc-50 hover:bg-zinc-100 border border-zinc-300 text-zinc-900 text-[11px] font-semibold rounded px-2 py-0.5 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors"
+            >
+              <option value="all">All</option>
+              <option value="error">Error</option>
+              <option value="anomaly">Anomaly</option>
+              <option value="warning">Warning</option>
+            </select>
+          </div>
+
           {/* Download Export Report Button */}
           <button
             type="button"
@@ -913,6 +1092,24 @@ export const SerializationErrorLogPanel: React.FC<SerializationErrorLogPanelProp
             <span>Download Export Report</span>
           </button>
 
+          {/* Export Only N+1 Logs Button */}
+          <button
+            type="button"
+            id="btn-export-only-n1-logs"
+            data-testid="btn-export-only-n1-logs"
+            onClick={handleExportOnlyN1Logs}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-semibold bg-rose-700 hover:bg-rose-800 text-white transition-all cursor-pointer shadow-2xs mr-1 active:scale-95 border border-rose-600"
+            title="Filter current logs to only N+1 related entries and trigger specialized JSON export for that subset"
+          >
+            <FileCode className="w-3.5 h-3.5 text-rose-200" />
+            <span>Export Only N+1 Logs</span>
+            {totalN1LogsCount > 0 && (
+              <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-rose-950/80 text-rose-200 font-mono font-bold">
+                {totalN1LogsCount}
+              </span>
+            )}
+          </button>
+
           {/* Quick Summary Button */}
           <button
             type="button"
@@ -924,6 +1121,32 @@ export const SerializationErrorLogPanel: React.FC<SerializationErrorLogPanelProp
           >
             <Sparkles className="w-3.5 h-3.5 text-rose-200" />
             <span>Quick Summary</span>
+          </button>
+
+          {/* Copy Concise Log Summary Button */}
+          <button
+            type="button"
+            id="btn-copy-log-summary"
+            data-testid="btn-copy-log-summary"
+            onClick={handleCopyLogSummary}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all cursor-pointer shadow-2xs mr-1 active:scale-95 border ${
+              isSummaryCopied
+                ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-500'
+                : 'bg-zinc-800 hover:bg-zinc-900 text-zinc-100 border-zinc-700'
+            }`}
+            title="Generate a concise text-based summary of current logs (total N+1 count, frequency, and most impacted components) and copy to clipboard"
+          >
+            {isSummaryCopied ? (
+              <>
+                <Check className="w-3.5 h-3.5 text-emerald-200" />
+                <span>Summary Copied!</span>
+              </>
+            ) : (
+              <>
+                <Copy className="w-3.5 h-3.5 text-zinc-300" />
+                <span>Copy Summary</span>
+              </>
+            )}
           </button>
 
           {activeMainTab === 'errors' ? (
