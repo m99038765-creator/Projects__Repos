@@ -5,10 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
-    "build": "vite build",
+    "build": "vite build && node -e \"const fs=require('fs'); fs.cpSync('dist','build',{recursive:true});\"",
+    "start": "node server.ts",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
-    "gcp-build": "vite build"
+    "gcp-build": "vite build && node -e \"const fs=require('fs'); fs.cpSync('dist','build',{recursive:true});\""
   },
   "engines": {
     "node": "22.x"

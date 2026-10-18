@@ -24,7 +24,7 @@ import { VisualQueryBuilderModal } from './components/VisualQueryBuilderModal';
 import { LatencyLegend } from './components/LatencyLegend';
 import { HeatmapIntensityScale } from './components/HeatmapIntensityScale';
 import { ExportPreviewModal } from './components/ExportPreviewModal';
-import { AlertTriangle, X, Flame, Zap, BellOff, TrendingUp, FileText, Loader, Sparkles, Search, Clipboard, Pin, RotateCcw, FileSpreadsheet, Camera, FileJson, Brain, Layers, Sliders, Settings, Info, RefreshCw, Target, Share2, CheckCircle2, ArrowRight, GripVertical, Bookmark, Save, Trash2, ArrowUp, ArrowDown, CheckSquare, Volume2, GitCompare, Link2, EyeOff } from 'lucide-react';
+import { AlertTriangle, X, Flame, Zap, BellOff, TrendingUp, FileText, Loader, Sparkles, Search, Clipboard, Pin, RotateCcw, FileSpreadsheet, Camera, FileJson, Brain, Layers, Sliders, Settings, Info, RefreshCw, Target, Share2, CheckCircle2, ArrowRight, GripVertical, Bookmark, Save, Trash2, ArrowUp, ArrowDown, CheckSquare, Volume2, GitCompare, Link2, EyeOff, Keyboard, ChevronDown } from 'lucide-react';
 import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
 import {
   exportRecords,
@@ -559,7 +559,8 @@ export default function App() {
         ]
       };
 
-      selectedCsvMetrics.forEach(metricKey => {
+      const orderedSelected = csvColumnOrder.filter(id => selectedCsvMetrics.includes(id));
+      orderedSelected.forEach(metricKey => {
         if (metricGenerators[metricKey]) {
           rows.push(...metricGenerators[metricKey]());
         }
@@ -1159,6 +1160,23 @@ export default function App() {
     setTimeout(() => setProactiveToast(null), 3000);
   };
 
+  const handleRestoreDefaultColumns = () => {
+    const defaults = [...DEFAULT_CSV_COLUMNS];
+    setCsvColumnOrder(defaults);
+    setSelectedCsvMetrics(defaults);
+    setActiveProfileId('full');
+    try {
+      localStorage.setItem('enterprise_diagnostic_csv_column_order', JSON.stringify(defaults));
+      localStorage.setItem('enterprise_diagnostic_csv_columns', JSON.stringify(defaults));
+    } catch {}
+    setProactiveToast({
+      title: 'Default Columns Restored',
+      message: 'Reset column order and selection state back to initial application defaults.',
+      type: 'success'
+    });
+    setTimeout(() => setProactiveToast(null), 3000);
+  };
+
   const handleCopyProfileToClipboard = () => {
     const profileData = {
       profileName: csvExportProfiles.find(p => p.id === activeProfileId)?.name || 'Custom Configuration',
@@ -1167,13 +1185,53 @@ export default function App() {
       exportedAt: new Date().toISOString()
     };
     const jsonStr = JSON.stringify(profileData, null, 2);
-    navigator.clipboard?.writeText(jsonStr);
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(jsonStr);
+    }
+    setIsProfileJsonCopied(true);
+    setTimeout(() => setIsProfileJsonCopied(false), 2500);
     setProactiveToast({
       title: '📋 Profile Copied to Clipboard',
       message: `Serialized ${selectedCsvMetrics.length} selected columns and full column order into shareable JSON string.`,
       type: 'success'
     });
     setTimeout(() => setProactiveToast(null), 3500);
+  };
+
+  const handleExportProfileJsonFile = () => {
+    try {
+      const activeProf = csvExportProfiles.find(p => p.id === activeProfileId);
+      const safeName = (activeProf?.name || 'custom_configuration')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '');
+      const profileData = {
+        version: 1,
+        type: 'csv_columns_profile_configuration',
+        profileName: activeProf?.name || 'Custom Configuration',
+        selectedColumns: selectedCsvMetrics,
+        columnOrder: csvColumnOrder,
+        columnMetadata: selectedCsvMetrics.map(id => ({
+          id,
+          label: csvColumnMetaMap[id]?.label || id,
+          description: csvColumnMetaMap[id]?.desc || ''
+        })),
+        exportedAt: new Date().toISOString()
+      };
+
+      const jsonStr = JSON.stringify(profileData, null, 2);
+      const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8;' });
+      triggerFileDownload(blob, `csv_profile_${safeName}_${Date.now()}.json`);
+
+      setProactiveToast({
+        title: 'JSON Profile Exported',
+        message: `Saved configuration profile with ${selectedCsvMetrics.length} columns to downloadable JSON file.`,
+        type: 'success'
+      });
+      setTimeout(() => setProactiveToast(null), 3500);
+    } catch (err) {
+      console.error('Failed to export profile JSON file:', err);
+    }
   };
 
   const handleDropColumn = (targetId: string) => {
@@ -1216,6 +1274,8 @@ export default function App() {
   const [csvColumnsSearchQuery, setCsvColumnsSearchQuery] = useState('');
   const [showOnlyHiddenCsvColumns, setShowOnlyHiddenCsvColumns] = useState(false);
   const [isCompareModalOpen, setIsCompareModalOpen] = useState(false);
+  const csvSearchInputRef = useRef<HTMLInputElement>(null);
+  const [isProfileDropdownOpen, setIsProfileDropdownOpen] = useState(false);
 
   const csvColumnMetaMap: Record<string, { label: string; desc: string; n1Relevance: string }> = useMemo(() => ({
     latency: {
@@ -1261,6 +1321,7 @@ export default function App() {
   }, [csvColumnOrder, csvColumnsSearchQuery, csvColumnMetaMap, showOnlyHiddenCsvColumns, selectedCsvMetrics]);
 
   const [isCsvDeepLinkCopied, setIsCsvDeepLinkCopied] = useState(false);
+  const [isProfileJsonCopied, setIsProfileJsonCopied] = useState(false);
   const [lastGeneratedCsvDeepLink, setLastGeneratedCsvDeepLink] = useState<string | null>(null);
 
   const handleGenerateCsvDeepLink = () => {
@@ -4657,7 +4718,7 @@ export default function App() {
                   <Bookmark className="w-3.5 h-3.5 text-indigo-400" />
                   <span>Export Configuration Profiles:</span>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 relative">
                   <select
                     id="select-export-profile"
                     data-testid="select-export-profile"
@@ -4675,6 +4736,124 @@ export default function App() {
                       </option>
                     ))}
                   </select>
+
+                  {/* Active profile column breakdown tooltip */}
+                  {(() => {
+                    const activeProf = csvExportProfiles.find(p => p.id === activeProfileId) || csvExportProfiles[0];
+                    return (
+                      <div className="relative group/sel-info inline-flex items-center">
+                        <button
+                          type="button"
+                          id={`btn-profile-info-${activeProf?.id}`}
+                          data-testid={`btn-profile-info-${activeProf?.id}`}
+                          className="p-1 text-zinc-400 hover:text-indigo-300 rounded cursor-help transition-colors flex items-center justify-center"
+                          title={`Included columns breakdown for ${activeProf?.name}`}
+                          aria-label={`Included columns breakdown for ${activeProf?.name}`}
+                        >
+                          <Info className="w-3.5 h-3.5 text-indigo-400 hover:text-indigo-300" />
+                        </button>
+                        <div className="absolute right-0 top-full mt-2 w-72 p-3 bg-zinc-950 border border-indigo-500/70 text-zinc-200 text-xs rounded-xl shadow-2xl opacity-0 group-hover/sel-info:opacity-100 transition-opacity pointer-events-none z-60 font-sans leading-relaxed">
+                          <div className="flex items-center justify-between pb-1 border-b border-zinc-800 font-mono text-[11px]">
+                            <strong className="text-indigo-300">{activeProf?.name}</strong>
+                            <span className="text-zinc-400 text-[10px]">{activeProf?.columns.length} columns</span>
+                          </div>
+                          <div className="text-[10px] text-zinc-400 mt-1.5 mb-1 font-mono">Included columns breakdown:</div>
+                          <div className="flex flex-wrap gap-1">
+                            {activeProf?.columns.map(col => (
+                              <span key={col} className="px-1.5 py-0.5 bg-indigo-950 text-indigo-200 border border-indigo-800/60 rounded text-[10px] font-mono">
+                                {csvColumnMetaMap[col]?.label || col}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Dropdown Menu Toggle to browse profiles with individual info icons */}
+                  <div className="relative">
+                    <button
+                      type="button"
+                      id="btn-toggle-export-profile-dropdown"
+                      data-testid="btn-toggle-export-profile-dropdown"
+                      onClick={() => setIsProfileDropdownOpen(prev => !prev)}
+                      className="px-2 py-1 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 hover:text-white border border-zinc-700 rounded-lg text-[11px] font-semibold cursor-pointer transition-colors flex items-center gap-1 shadow-xs"
+                      title="Browse all profiles with column breakdowns"
+                      aria-haspopup="true"
+                      aria-expanded={isProfileDropdownOpen}
+                    >
+                      <span>Profiles Menu</span>
+                      <ChevronDown className={`w-3 h-3 text-zinc-400 transition-transform ${isProfileDropdownOpen ? 'rotate-180' : ''}`} />
+                    </button>
+
+                    {isProfileDropdownOpen && (
+                      <div
+                        id="menu-export-profiles-dropdown"
+                        data-testid="menu-export-profiles-dropdown"
+                        className="absolute right-0 top-full mt-1.5 w-72 bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl z-50 py-1 divide-y divide-zinc-800 animate-fadeIn"
+                      >
+                        <div className="px-3 py-1.5 text-[10px] font-mono text-zinc-400 uppercase tracking-wider flex items-center justify-between">
+                          <span>Profiles ({csvExportProfiles.length})</span>
+                          <span>Hover ℹ for breakdown</span>
+                        </div>
+                        <div className="max-h-60 overflow-y-auto py-1">
+                          {csvExportProfiles.map(p => {
+                            const isSelected = p.id === activeProfileId;
+                            return (
+                              <div
+                                key={p.id}
+                                className={`flex items-center justify-between px-3 py-2 text-xs transition-colors group/item ${
+                                  isSelected ? 'bg-indigo-950/60 text-white font-bold' : 'text-zinc-300 hover:bg-zinc-800/80 hover:text-white'
+                                }`}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    handleApplyProfile(p);
+                                    setIsProfileDropdownOpen(false);
+                                  }}
+                                  className="flex-1 text-left truncate cursor-pointer flex items-center gap-1.5"
+                                  title={`Select ${p.name}`}
+                                >
+                                  <Bookmark className={`w-3.5 h-3.5 ${isSelected ? 'text-indigo-400' : 'text-zinc-500'}`} />
+                                  <span className="truncate">{p.name}</span>
+                                </button>
+                                {/* Info icon next to profile name */}
+                                <div className="relative group/prof-tooltip shrink-0 ml-2">
+                                  <button
+                                    type="button"
+                                    id={`btn-dropdown-profile-info-${p.id}`}
+                                    data-testid={`btn-dropdown-profile-info-${p.id}`}
+                                    className="p-1 text-zinc-400 hover:text-indigo-300 rounded cursor-help transition-colors"
+                                    title={`View columns in ${p.name}`}
+                                    aria-label={`Column breakdown for ${p.name}`}
+                                  >
+                                    <Info className="w-3.5 h-3.5 text-indigo-400 hover:text-indigo-300" />
+                                  </button>
+                                  {/* Tooltip Card on Hover */}
+                                  <div className="absolute right-0 top-full mt-1 w-64 p-3 bg-zinc-950 border border-indigo-500/70 text-zinc-200 text-xs rounded-xl shadow-2xl opacity-0 group-hover/prof-tooltip:opacity-100 transition-opacity pointer-events-none z-60 font-sans leading-relaxed">
+                                    <div className="flex items-center justify-between pb-1 border-b border-zinc-800 font-mono text-[11px]">
+                                      <span className="font-bold text-indigo-300">{p.name}</span>
+                                      <span className="text-zinc-400 text-[10px]">{p.columns.length} columns</span>
+                                    </div>
+                                    <div className="text-[10px] text-zinc-400 mt-1.5 mb-1 font-mono">Included columns breakdown:</div>
+                                    <div className="flex flex-wrap gap-1">
+                                      {p.columns.map(col => (
+                                        <span key={col} className="px-1.5 py-0.5 bg-indigo-950 text-indigo-200 border border-indigo-800/60 rounded text-[10px] font-mono">
+                                          {csvColumnMetaMap[col]?.label || col}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
                   <button
                     type="button"
                     id="btn-compare-profile-builtin"
@@ -4689,7 +4868,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Quick-switch profile badges */}
+              {/* Quick-switch profile badges with info icons */}
               <div className="flex flex-wrap items-center gap-1.5 pt-1">
                 {csvExportProfiles.map(p => {
                   const isActive = activeProfileId === p.id;
@@ -4710,6 +4889,36 @@ export default function App() {
                         <Bookmark className="w-3 h-3 text-indigo-300" />
                         <span>{p.name}</span>
                       </button>
+
+                      {/* Small info icon next to each profile name */}
+                      <div className="relative group/badge-info inline-flex items-center px-1">
+                        <button
+                          type="button"
+                          id={`btn-profile-info-badge-${p.id}`}
+                          data-testid={`btn-profile-info-badge-${p.id}`}
+                          className="p-0.5 text-zinc-400 hover:text-indigo-300 rounded cursor-help transition-colors flex items-center justify-center"
+                          title={`View column breakdown for ${p.name}`}
+                          aria-label={`Column breakdown for ${p.name}`}
+                        >
+                          <Info className="w-3 h-3 text-indigo-400 hover:text-indigo-300" />
+                        </button>
+                        {/* Tooltip Card on Hover */}
+                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 p-2.5 bg-zinc-950 border border-indigo-500/70 text-zinc-200 text-xs rounded-xl shadow-2xl opacity-0 group-hover/badge-info:opacity-100 transition-opacity pointer-events-none z-50 font-sans leading-relaxed">
+                          <div className="flex items-center justify-between pb-1 border-b border-zinc-800 font-mono text-[11px]">
+                            <span className="font-bold text-indigo-200">{p.name}</span>
+                            <span className="text-zinc-400 text-[10px]">{p.columns.length} columns</span>
+                          </div>
+                          <div className="text-[10px] text-zinc-400 mt-1 mb-1.5 font-mono">Included columns breakdown:</div>
+                          <div className="flex flex-wrap gap-1">
+                            {p.columns.map(col => (
+                              <span key={col} className="px-1.5 py-0.5 bg-indigo-950/90 text-indigo-200 border border-indigo-800/60 rounded text-[10px] font-mono">
+                                {csvColumnMetaMap[col]?.label || col}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
                       {!p.isBuiltin && (
                         <button
                           type="button"
@@ -4759,45 +4968,74 @@ export default function App() {
             </div>
 
             {/* Search Input */}
-            <div className="px-5 py-2.5 bg-zinc-950/40 border-b border-zinc-800 space-y-1.5">
-              <div className="flex items-center gap-2">
-                <Search className="w-4 h-4 text-zinc-400 shrink-0" />
+            <div className="px-5 py-3 bg-zinc-950/60 border-b border-zinc-800 space-y-2">
+              <div
+                id="search-csv-columns-container"
+                data-testid="search-csv-columns-container"
+                className="relative flex items-center bg-zinc-900/90 border-2 border-zinc-700 hover:border-zinc-500 focus-within:border-indigo-500 focus-within:ring-2 focus-within:ring-indigo-500/30 rounded-xl px-3 py-2 shadow-xs transition-all"
+              >
+                <Search className="w-4 h-4 text-zinc-400 shrink-0 mr-2.5 transition-colors" />
                 <input
+                  ref={csvSearchInputRef}
                   type="text"
                   id="input-search-csv-columns"
                   data-testid="input-search-csv-columns"
-                  placeholder="Search metric columns..."
+                  placeholder="Search metric columns (e.g. latency, cache, records)..."
                   value={csvColumnsSearchQuery}
                   onChange={(e) => setCsvColumnsSearchQuery(e.target.value)}
                   className="w-full bg-transparent text-xs text-white placeholder-zinc-500 focus:outline-none font-mono"
+                  aria-label="Search metric columns"
                 />
-                {csvColumnsSearchQuery && (
-                  <button
-                    type="button"
-                    id="btn-clear-csv-search-icon"
-                    data-testid="btn-clear-csv-search-icon"
-                    onClick={() => setCsvColumnsSearchQuery('')}
-                    className="text-zinc-400 hover:text-white text-xs cursor-pointer px-1"
-                    title="Clear search query"
-                  >
-                    ✕
-                  </button>
-                )}
+                <button
+                  type="button"
+                  id="btn-clear-csv-search-icon"
+                  data-testid="btn-clear-csv-search-icon"
+                  onClick={() => {
+                    setCsvColumnsSearchQuery('');
+                    csvSearchInputRef.current?.focus();
+                  }}
+                  className={`px-2 py-0.5 rounded-md transition-all cursor-pointer shrink-0 ml-1.5 flex items-center gap-1 text-[11px] font-medium border ${
+                    csvColumnsSearchQuery
+                      ? 'bg-zinc-800 text-zinc-200 hover:text-white hover:bg-zinc-700 border-zinc-600 shadow-xs'
+                      : 'bg-zinc-900/50 text-zinc-500 hover:text-zinc-300 border-zinc-800/80 opacity-60'
+                  }`}
+                  title="Clear"
+                  aria-label="Clear"
+                >
+                  <X className="w-3.5 h-3.5" />
+                  <span>Clear</span>
+                </button>
               </div>
-              <div className="text-[11px] font-mono text-zinc-400 flex items-center justify-between">
-                <span>Matches found: <strong className="text-white font-bold">{filteredCsvColumns.length}</strong> of {csvColumnOrder.length}</span>
-                {csvColumnsSearchQuery && (
-                  <button
-                    type="button"
-                    id="btn-clear-csv-search"
-                    data-testid="btn-clear-csv-search"
-                    onClick={() => setCsvColumnsSearchQuery('')}
-                    className="text-indigo-400 hover:text-indigo-300 underline cursor-pointer"
-                    title="Clear search query"
-                  >
-                    Clear
-                  </button>
-                )}
+              <div className="text-[11px] font-mono text-zinc-400 flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 pt-0.5">
+                <div className="flex items-center gap-2">
+                  <span>Matches found: <strong className="text-white font-bold">{filteredCsvColumns.length}</strong> of {csvColumnOrder.length}</span>
+                  {csvColumnsSearchQuery && (
+                    <button
+                      type="button"
+                      id="btn-clear-csv-search"
+                      data-testid="btn-clear-csv-search"
+                      onClick={() => {
+                        setCsvColumnsSearchQuery('');
+                        csvSearchInputRef.current?.focus();
+                      }}
+                      className="text-indigo-400 hover:text-indigo-300 underline cursor-pointer text-[10px]"
+                      title="Clear"
+                      aria-label="Clear"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+                {/* Helper text / tooltip mentioning Alt+Up/Down shortcut */}
+                <div
+                  id="helper-csv-reorder-shortcut"
+                  data-testid="helper-csv-reorder-shortcut"
+                  className="inline-flex items-center gap-1.5 text-[10px] text-zinc-400 bg-zinc-900/90 px-2.5 py-1 rounded-lg border border-zinc-800"
+                  title="Tip: Use Alt+Up/Down to reorder columns in the list."
+                >
+                  <Keyboard className="w-3 h-3 text-amber-400 shrink-0" />
+                  <span>Tip: Use <kbd className="px-1 py-0.2 bg-zinc-800 border border-zinc-700 rounded text-amber-300 font-mono font-bold">Alt+Up/Down</kbd> to reorder columns in the list.</span>
+                </div>
               </div>
             </div>
 
@@ -4921,8 +5159,23 @@ export default function App() {
               {(() => {
                 if (filteredCsvColumns.length === 0) {
                   return (
-                    <div className="py-6 text-center text-zinc-500 text-xs font-mono">
-                      No metric columns matching "{csvColumnsSearchQuery}"
+                    <div className="py-6 text-center text-zinc-500 text-xs font-mono space-y-2">
+                      <div>No metric columns matching "{csvColumnsSearchQuery}"</div>
+                      <button
+                        type="button"
+                        id="btn-clear-csv-search-empty-state"
+                        data-testid="btn-clear-csv-search-empty-state"
+                        onClick={() => {
+                          setCsvColumnsSearchQuery('');
+                          csvSearchInputRef.current?.focus();
+                        }}
+                        className="px-3 py-1 bg-zinc-800 hover:bg-zinc-700 text-indigo-300 hover:text-white rounded-lg text-xs font-bold cursor-pointer transition-colors inline-flex items-center gap-1 border border-zinc-700"
+                        title="Clear"
+                        aria-label="Clear"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                        <span>Clear search filter</span>
+                      </button>
                     </div>
                   );
                 }
@@ -4969,14 +5222,14 @@ export default function App() {
                         setDraggedColumnId(null);
                         setDragOverColumnId(null);
                       }}
-                      className={`flex items-center justify-between p-2.5 rounded-xl border transition-all ${
+                      className={`flex items-center justify-between p-2.5 rounded-xl border transition-all duration-300 ease-in-out ${
                         isDragOver
                           ? 'border-indigo-400 bg-indigo-950/80 ring-2 ring-indigo-500/60 scale-[1.01]'
                           : isDragging
                           ? 'opacity-40 border-indigo-400 border-dashed bg-zinc-950'
                           : isSelected
-                          ? 'bg-indigo-950/50 border-indigo-500/60 text-white shadow-xs'
-                          : 'bg-zinc-950/50 border-zinc-800 hover:border-zinc-700 text-zinc-300'
+                          ? 'bg-indigo-950/60 border-indigo-500/60 text-white shadow-xs'
+                          : 'bg-zinc-950/50 hover:bg-zinc-900/60 border-zinc-800 hover:border-zinc-700 text-zinc-300'
                       }`}
                     >
                       <div className="flex items-center gap-2.5 flex-1 min-w-0">
@@ -5012,15 +5265,15 @@ export default function App() {
                               console.error(err);
                             }
                           }}
-                          className="w-4 h-4 accent-indigo-500 rounded cursor-pointer shrink-0"
+                          className="w-4 h-4 accent-indigo-500 rounded cursor-pointer shrink-0 transition-all duration-300 ease-in-out hover:scale-110 active:scale-95 focus:ring-2 focus:ring-indigo-500/40"
                         />
 
                         {/* Label & Description */}
                         <label
                           htmlFor={`checkbox-column-${id}`}
-                          className="space-y-0.5 cursor-pointer select-none truncate flex-1"
+                          className="space-y-0.5 cursor-pointer select-none truncate flex-1 transition-colors duration-300 ease-in-out"
                         >
-                          <span className="font-bold text-xs block text-white truncate">{meta.label}</span>
+                          <span className={`font-bold text-xs block truncate transition-colors duration-300 ${isSelected ? 'text-white' : 'text-zinc-200'}`}>{meta.label}</span>
                           <span className="text-[10px] text-zinc-400 block truncate">{meta.desc}</span>
                         </label>
 
@@ -5169,28 +5422,68 @@ export default function App() {
                 </button>
                 <button
                   type="button"
-                  id="btn-copy-csv-profile"
-                  data-testid="btn-copy-csv-profile"
+                  id="btn-copy-profile-json"
+                  data-testid="btn-copy-profile-json"
                   onClick={handleCopyProfileToClipboard}
-                  className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-indigo-300 text-xs rounded-xl font-bold cursor-pointer transition-colors flex items-center gap-1"
-                  title="Serialize current column selections and order into a shareable JSON string and copy to clipboard"
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold cursor-pointer transition-all flex items-center gap-1.5 shadow-xs active:scale-95 border ${
+                    isProfileJsonCopied
+                      ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-400'
+                      : 'bg-zinc-800 hover:bg-zinc-700 text-indigo-300 hover:text-white border-zinc-700 hover:border-indigo-500/50'
+                  }`}
+                  title="Serialize current selection and order into a JSON string and write to clipboard"
+                  aria-label="Copy Profile JSON"
                 >
-                  <Clipboard className="w-3 h-3" />
-                  <span>Copy Profile to Clipboard</span>
+                  {isProfileJsonCopied ? (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300" />
+                      <span>Profile JSON Copied!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Clipboard className="w-3.5 h-3.5" />
+                      <span>Copy Profile JSON</span>
+                    </>
+                  )}
                 </button>
                 <button
                   type="button"
-                  id="btn-reset-column-order"
-                  data-testid="btn-reset-column-order"
-                  onClick={handleResetColumnOrder}
-                  className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-amber-300 border border-amber-500/40 hover:border-amber-400 text-xs rounded-xl font-bold cursor-pointer transition-all flex items-center gap-1.5 shadow-xs active:scale-95"
-                  title="Restore column sequence to the application default order"
+                  id="btn-export-profile-json"
+                  data-testid="btn-export-profile-json"
+                  onClick={handleExportProfileJsonFile}
+                  className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-indigo-300 hover:text-white border border-zinc-700 hover:border-indigo-500/50 text-xs rounded-xl font-bold cursor-pointer transition-all flex items-center gap-1.5 shadow-xs active:scale-95"
+                  title="Download column configuration and order as a JSON file"
+                  aria-label="Export as JSON"
+                >
+                  <FileJson className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Export as JSON</span>
+                </button>
+                <button
+                  type="button"
+                  id="btn-restore-default-columns"
+                  data-testid="btn-restore-default-columns"
+                  onClick={handleRestoreDefaultColumns}
+                  className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-amber-300 hover:text-amber-200 border border-amber-500/40 hover:border-amber-400 text-xs rounded-xl font-bold cursor-pointer transition-all flex items-center gap-1.5 shadow-xs active:scale-95"
+                  title="Immediately reset column sequence and selections to application initial defaults"
+                  aria-label="Restore Default Columns"
                 >
                   <RotateCcw className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Reset Column Order</span>
+                  <span>Restore Default Columns</span>
                 </button>
                 <button
                   type="button"
+                  id="btn-export-csv-now"
+                  data-testid="btn-export-csv-now"
+                  onClick={handleExportDiagnosticsCsv}
+                  className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-xs rounded-xl shadow cursor-pointer transition-all flex items-center gap-1.5 active:scale-95 border border-emerald-400/50"
+                  title="Directly trigger CSV download with the current configuration"
+                >
+                  <FileSpreadsheet className="w-4 h-4 text-emerald-100" />
+                  <span>Export CSV Now</span>
+                </button>
+                <button
+                  type="button"
+                  id="btn-save-close-csv-modal"
+                  data-testid="btn-save-close-csv-modal"
                   onClick={() => setIsCsvColumnsModalOpen(false)}
                   className="px-4 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-extrabold text-xs rounded-xl shadow cursor-pointer transition-all"
                 >

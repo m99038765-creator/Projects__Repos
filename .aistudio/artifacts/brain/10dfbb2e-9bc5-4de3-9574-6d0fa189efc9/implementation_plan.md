@@ -70,6 +70,21 @@ This implementation plan details the addition of a clickable N+1 log count badge
   - Manually triggers a new N+1 query cascade log entry for testing telemetry, sparklines, and badge breathing pulse animations.
 - **CSV Columns Auto-Save Mechanism**:
   - Implemented persistent `useEffect` auto-save hooks in `App.tsx` that instantly synchronize `selectedCsvMetrics` and `csvColumnOrder` to `localStorage` immediately upon any user modification (selection, drag-and-drop, reordering, profile application, or resetting).
+- **Primary 'Export CSV Now' Modal Button**:
+  - Added a primary 'Export CSV Now' button (`#btn-export-csv-now`) to the `#modal-configure-csv-columns` footer.
+  - Directly triggers CSV download serialization adhering to the ordered column configuration without requiring users to navigate away or close the modal.
+- **Export Configuration Profiles Breakdown Info Tooltips**:
+  - Added small info icons (`<Info>`) next to profile names in both the active dropdown selector, custom Profiles Menu dropdown, and quick-switch profile badges (`#btn-profile-info-badge-${p.id}`, `#btn-dropdown-profile-info-${p.id}`, and `#btn-profile-info-${activeProf.id}`).
+  - Hovering displays an accessible tooltip card with the full breakdown of included columns for that profile.
+- **'Copy Profile JSON' Modal Button**:
+  - Added a dedicated 'Copy Profile JSON' button (`#btn-copy-profile-json`) in the `#modal-configure-csv-columns` footer.
+  - Serializes active profile name, selected columns list, ordered sequence, and timestamp into a formatted JSON string, writing it directly to the clipboard with real-time visual feedback ("Profile JSON Copied!").
+- **'Export as JSON' Download Button**:
+  - Added an 'Export as JSON' button (`#btn-export-profile-json`) in the `#modal-configure-csv-columns` footer.
+  - Serializes current profile metadata, selected columns, ordered sequence, and column definitions into a downloadable JSON file (`csv_profile_<name>_<timestamp>.json`), complementing clipboard sharing with file-based persistence.
+- **'Restore Default Columns' Modal Button**:
+  - Added a 'Restore Default Columns' button (`#btn-restore-default-columns`) in the `#modal-configure-csv-columns` footer.
+  - Immediately restores both `csvColumnOrder` and `selectedCsvMetrics` back to the application's initial default configuration (`DEFAULT_CSV_COLUMNS`), persists changes to `localStorage`, and displays a toast notification.
 
 ## 2. User Experience & Visual Design
 
@@ -78,9 +93,13 @@ This implementation plan details the addition of a clickable N+1 log count badge
   - Displays icon (`Layers`) and active cascade count with 15-minute density histogram.
   - On log count increase, triggers a subtle 'breathing' pulse animation (`.animate-badge-breathing`) featuring smooth cubic-bezier scaling (1.0 -> 1.06 -> 1.0) and glowing rose box-shadow, alongside an animated ping dot indicator.
   - On click, executes smooth scroll (`scrollIntoView({ behavior: 'smooth' })`) to the serialization log component and triggers a shake-and-glow effect.
-- **Configure CSV Columns Search Input**:
-  - Search box with search icon (`Search`), placeholder `"Search metric columns..."`, and clear button (`X`).
-  - Filtered list items maintain smooth transition and keyboard accessibility.
+- **Configure CSV Columns Search Input & Shortcuts Discovery**:
+  - Prominent search box with 2px solid border (`border-2 border-zinc-700`), hover accentuation, and indigo glow focus state (`focus-within:border-indigo-500 focus-within:ring-2 focus-within:ring-indigo-500/30`).
+  - Search icon (`Search`), placeholder `"Search metric columns (e.g. latency, cache, records)..."`, and clear button (`#btn-clear-csv-search-icon`) with `X` icon inside the input field to immediately reset `csvColumnsSearchQuery`.
+  - In-place helper text and tooltip (`#helper-csv-reorder-shortcut`) below the input informing users: "Tip: Use Alt+Up/Down to reorder columns in the list."
+- **Configure CSV Columns Row Highlight Transitions**:
+  - Applied subtle `transition-all duration-300 ease-in-out` animation to reorderable column row containers, enabling smooth background highlight shifts between neutral dark zinc (`bg-zinc-950/50`) and glowing indigo (`bg-indigo-950/60 border-indigo-500/60`) upon toggling.
+  - Added micro-interaction scale and focus transitions to individual checkboxes (`transition-all duration-300 ease-in-out hover:scale-110 active:scale-95 focus:ring-2 focus:ring-indigo-500/40`) and labels.
 - **Share Deep-Link URL Button & Banner**:
   - Prominent button (`#btn-share-csv-deep-link`) in the modal footer with `Link2` icon and interactive feedback states.
   - Interactive deep-link banner (`#banner-csv-deep-link-url`) with read-only select-all input and quick copy button.
