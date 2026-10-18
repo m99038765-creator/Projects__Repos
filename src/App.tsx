@@ -24,7 +24,7 @@ import { VisualQueryBuilderModal } from './components/VisualQueryBuilderModal';
 import { LatencyLegend } from './components/LatencyLegend';
 import { HeatmapIntensityScale } from './components/HeatmapIntensityScale';
 import { ExportPreviewModal } from './components/ExportPreviewModal';
-import { AlertTriangle, X, Flame, Zap, BellOff, TrendingUp, FileText, Loader, Sparkles, Search, Clipboard, Pin, RotateCcw, FileSpreadsheet, Camera, FileJson, Brain, Layers, Sliders, Settings, Info, RefreshCw, Target, Share2, CheckCircle2, ArrowRight, GripVertical, Bookmark, Save, Trash2, ArrowUp, ArrowDown, CheckSquare, Volume2, GitCompare, Link2 } from 'lucide-react';
+import { AlertTriangle, X, Flame, Zap, BellOff, TrendingUp, FileText, Loader, Sparkles, Search, Clipboard, Pin, RotateCcw, FileSpreadsheet, Camera, FileJson, Brain, Layers, Sliders, Settings, Info, RefreshCw, Target, Share2, CheckCircle2, ArrowRight, GripVertical, Bookmark, Save, Trash2, ArrowUp, ArrowDown, CheckSquare, Volume2, GitCompare, Link2, EyeOff } from 'lucide-react';
 import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
 import {
   exportRecords,
@@ -1055,6 +1055,18 @@ export default function App() {
     }
   });
 
+  useEffect(() => {
+    try {
+      localStorage.setItem('enterprise_diagnostic_csv_columns', JSON.stringify(selectedCsvMetrics));
+    } catch {}
+  }, [selectedCsvMetrics]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('enterprise_diagnostic_csv_column_order', JSON.stringify(csvColumnOrder));
+    } catch {}
+  }, [csvColumnOrder]);
+
   const [csvExportProfiles, setCsvExportProfiles] = useState<CsvExportProfile[]>(() => {
     try {
       const saved = localStorage.getItem('enterprise_csv_export_profiles');
@@ -1072,6 +1084,7 @@ export default function App() {
 
   const [activeProfileId, setActiveProfileId] = useState<string>('full');
   const [newProfileName, setNewProfileName] = useState<string>('');
+  const [csvProfileSavedToast, setCsvProfileSavedToast] = useState<string | null>(null);
   const [draggedColumnId, setDraggedColumnId] = useState<string | null>(null);
   const [dragOverColumnId, setDragOverColumnId] = useState<string | null>(null);
 
@@ -1109,6 +1122,8 @@ export default function App() {
       const customOnly = updatedProfiles.filter(p => !p.isBuiltin);
       localStorage.setItem('enterprise_csv_export_profiles', JSON.stringify(customOnly));
     } catch {}
+    setCsvProfileSavedToast(`Export configuration profile "${newProfile.name}" saved successfully (${newProfile.columns.length} columns).`);
+    setTimeout(() => setCsvProfileSavedToast(null), 4000);
     setProactiveToast({
       title: 'Profile Saved',
       message: `Configuration profile "${newProfile.name}" saved successfully.`
@@ -1199,6 +1214,52 @@ export default function App() {
   };
   const [isCsvColumnsModalOpen, setIsCsvColumnsModalOpen] = useState(false);
   const [csvColumnsSearchQuery, setCsvColumnsSearchQuery] = useState('');
+  const [showOnlyHiddenCsvColumns, setShowOnlyHiddenCsvColumns] = useState(false);
+  const [isCompareModalOpen, setIsCompareModalOpen] = useState(false);
+
+  const csvColumnMetaMap: Record<string, { label: string; desc: string; n1Relevance: string }> = useMemo(() => ({
+    latency: {
+      label: 'Execution Latency (ms)',
+      desc: 'Query execution time and thresholds',
+      n1Relevance: 'Measures wall-clock duration. In N+1 cascades, cumulative latency explodes exponentially as unbatched subqueries multiply per parent row.'
+    },
+    totalRecords: {
+      label: 'Total Records Scanned',
+      desc: 'Row count scanned during execution',
+      n1Relevance: 'Tracks total rows examined. Unbatched N+1 queries cause massive redundant table scans or repeated index lookups across disconnected child queries.'
+    },
+    cacheHit: {
+      label: 'Cache Hit Status',
+      desc: 'Whether query result was served from cache',
+      n1Relevance: 'Indicates buffer pool cache status. N+1 cascades bypass memoization and repeatedly thrash the buffer pool, lowering cache hit ratios.'
+    },
+    queryCount: {
+      label: 'N+1 Cascaded Query Count',
+      desc: 'Active child queries and cascade count',
+      n1Relevance: 'Directly counts unbatched subqueries spawned. Spikes indicate disabled batch eager loading (e.g. missing JOIN batching).'
+    },
+    errorStatus: {
+      label: 'System Error Status',
+      desc: 'Active system errors or simulated faults',
+      n1Relevance: 'Monitors serialization exceptions or timeout faults triggered when cascade query depth or CPU contention exceeds database limits.'
+    },
+    flags: {
+      label: 'Optimization Flags State',
+      desc: 'Boolean state of all engine flags',
+      n1Relevance: 'Reflects optimization flags (e.g. batchEagerLoading). Correlating flags confirms whether optimizations mitigate N+1 cascades.'
+    }
+  }), []);
+
+  const filteredCsvColumns = useMemo(() => {
+    return csvColumnOrder.filter(id => {
+      if (showOnlyHiddenCsvColumns && selectedCsvMetrics.includes(id)) return false;
+      if (!csvColumnsSearchQuery.trim()) return true;
+      const q = csvColumnsSearchQuery.toLowerCase().trim();
+      const meta = csvColumnMetaMap[id] || { label: id, desc: '', n1Relevance: 'Custom metric tracked during execution.' };
+      return meta.label.toLowerCase().includes(q) || meta.desc.toLowerCase().includes(q) || id.toLowerCase().includes(q);
+    });
+  }, [csvColumnOrder, csvColumnsSearchQuery, csvColumnMetaMap, showOnlyHiddenCsvColumns, selectedCsvMetrics]);
+
   const [isCsvDeepLinkCopied, setIsCsvDeepLinkCopied] = useState(false);
   const [lastGeneratedCsvDeepLink, setLastGeneratedCsvDeepLink] = useState<string | null>(null);
 
@@ -1927,6 +1988,7 @@ export default function App() {
   ).length;
 
   const [isBadgeBreathing, setIsBadgeBreathing] = useState<boolean>(false);
+  const [isAnomalyBadgeBreathing, setIsAnomalyBadgeBreathing] = useState<boolean>(false);
   const prevN1CountRef = useRef<number>(n1LogsCount);
   const [panelShakeGlowTrigger, setPanelShakeGlowTrigger] = useState<boolean>(false);
 
@@ -1985,6 +2047,8 @@ export default function App() {
     });
 
     if (newN1Anomaly && !notificationsMuted) {
+      setIsAnomalyBadgeBreathing(true);
+      setTimeout(() => setIsAnomalyBadgeBreathing(false), 1400);
       setN1AnomalyToast({
         logId: newN1Anomaly.id,
         message: newN1Anomaly.message,
@@ -3067,13 +3131,15 @@ export default function App() {
                       setPanelShakeGlowTrigger(prev => !prev);
                     }}
                     className={`font-mono text-[11px] bg-rose-950/90 border text-rose-200 px-3 py-1.5 rounded-xl font-bold flex flex-col items-center justify-center gap-1 hover:bg-rose-900 hover:text-white transition-all cursor-pointer shadow-xs min-w-[210px] ${
-                      isBadgeBreathing
+                      isAnomalyBadgeBreathing
+                        ? 'animate-anomaly-badge-breathing border-amber-300 ring-2 ring-amber-500/80 shadow-[0_0_22px_rgba(245,158,11,0.7)]'
+                        : isBadgeBreathing
                         ? 'animate-badge-breathing border-rose-300 ring-2 ring-rose-500/60 shadow-[0_0_18px_rgba(244,63,94,0.6)]'
                         : 'border-rose-500/60'
                     }`}
-                    data-breathing={isBadgeBreathing ? 'true' : undefined}
-                    data-is-breathing={isBadgeBreathing ? 'true' : undefined}
-                    data-animating={isBadgeBreathing ? 'breathing' : undefined}
+                    data-breathing={isBadgeBreathing || isAnomalyBadgeBreathing ? 'true' : undefined}
+                    data-is-breathing={isBadgeBreathing || isAnomalyBadgeBreathing ? 'true' : undefined}
+                    data-animating={isAnomalyBadgeBreathing ? 'anomaly-breathing' : isBadgeBreathing ? 'breathing' : undefined}
                     title={`Click or press Ctrl+N while banner is focused to filter and scroll directly to active N+1 cascade log entries\nN+1 Intensity: ${n1LogsCount}/${(serializationLogs || []).length || 1} logs (${Math.round((n1LogsCount / Math.max(1, (serializationLogs || []).length || 1)) * 100)}%)`}
                   >
                     <div className="flex items-center gap-1.5 w-full justify-between">
@@ -3132,6 +3198,20 @@ export default function App() {
                         });
                       })()}
                     </div>
+                  </button>
+                  <button
+                    type="button"
+                    id="btn-simulate-n1-event-badge"
+                    data-testid="btn-simulate-n1-event-badge"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleAddSimulatedN1Log();
+                    }}
+                    className="font-mono text-[11px] bg-rose-900/80 hover:bg-rose-800 text-rose-100 border border-rose-500/60 px-2.5 py-1.5 rounded-xl font-bold flex items-center gap-1.5 transition-all cursor-pointer shadow-xs active:scale-95 shrink-0"
+                    title="Manually trigger a new N+1 cascade log entry for testing telemetry and breathing animations"
+                  >
+                    <Flame className="w-3.5 h-3.5 text-amber-300 animate-pulse" />
+                    <span>+ Simulate N+1 Event</span>
                   </button>
                   <div
                     id="sparkline-n1-logs-trend"
@@ -4450,6 +4530,28 @@ export default function App() {
               </button>
             </div>
 
+            {/* Success Toast Notification Banner */}
+            {csvProfileSavedToast && (
+              <div
+                id="toast-csv-profile-saved"
+                data-testid="toast-csv-profile-saved"
+                className="mx-5 mt-3.5 p-3 bg-emerald-950/90 border border-emerald-500/60 text-emerald-100 rounded-xl flex items-center justify-between text-xs animate-fadeIn shadow-lg"
+              >
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span className="font-semibold">{csvProfileSavedToast}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setCsvProfileSavedToast(null)}
+                  className="text-emerald-300 hover:text-white cursor-pointer p-0.5"
+                  title="Dismiss"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
             {/* Top Bulk Toggle Operations Toolbar */}
             <div
               id="toolbar-csv-bulk-toggle-top"
@@ -4512,6 +4614,21 @@ export default function App() {
                     <RotateCcw className="w-3.5 h-3.5 text-amber-400" />
                     <span>Reset Column Order</span>
                   </button>
+                  <button
+                    type="button"
+                    id="btn-toggle-show-hidden-csv"
+                    data-testid="btn-toggle-show-hidden-csv"
+                    onClick={() => setShowOnlyHiddenCsvColumns(!showOnlyHiddenCsvColumns)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-colors flex items-center gap-1.5 active:scale-95 border-l border-zinc-700/60 ${
+                      showOnlyHiddenCsvColumns
+                        ? 'bg-amber-600 text-white border-amber-500 hover:bg-amber-500'
+                        : 'hover:bg-zinc-800 text-amber-300 hover:text-amber-200'
+                    }`}
+                    title="Toggle to view only previously deselected (hidden) columns"
+                  >
+                    <EyeOff className="w-3.5 h-3.5" />
+                    <span>Show Hidden ({csvColumnOrder.length - selectedCsvMetrics.length})</span>
+                  </button>
                 </div>
               </div>
 
@@ -4540,23 +4657,36 @@ export default function App() {
                   <Bookmark className="w-3.5 h-3.5 text-indigo-400" />
                   <span>Export Configuration Profiles:</span>
                 </div>
-                <select
-                  id="select-export-profile"
-                  data-testid="select-export-profile"
-                  aria-label="Select Export Configuration Profile"
-                  value={activeProfileId}
-                  onChange={(e) => {
-                    const prof = csvExportProfiles.find(p => p.id === e.target.value);
-                    if (prof) handleApplyProfile(prof);
-                  }}
-                  className="bg-zinc-900 border border-zinc-700 hover:border-indigo-500 focus:border-indigo-500 rounded-lg px-2.5 py-1 text-xs text-zinc-200 cursor-pointer shadow-xs max-w-[200px]"
-                >
-                  {csvExportProfiles.map(p => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} {p.isBuiltin ? '' : '(Custom)'}
-                    </option>
-                  ))}
-                </select>
+                <div className="flex items-center gap-2">
+                  <select
+                    id="select-export-profile"
+                    data-testid="select-export-profile"
+                    aria-label="Select Export Configuration Profile"
+                    value={activeProfileId}
+                    onChange={(e) => {
+                      const prof = csvExportProfiles.find(p => p.id === e.target.value);
+                      if (prof) handleApplyProfile(prof);
+                    }}
+                    className="bg-zinc-900 border border-zinc-700 hover:border-indigo-500 focus:border-indigo-500 rounded-lg px-2.5 py-1 text-xs text-zinc-200 cursor-pointer shadow-xs max-w-[170px]"
+                  >
+                    {csvExportProfiles.map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} {p.isBuiltin ? '' : '(Custom)'}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    id="btn-compare-profile-builtin"
+                    data-testid="btn-compare-profile-builtin"
+                    onClick={() => setIsCompareModalOpen(true)}
+                    className="px-2.5 py-1 bg-zinc-900 hover:bg-zinc-800 text-indigo-300 border border-indigo-500/40 rounded-lg text-[11px] font-bold cursor-pointer transition-colors flex items-center gap-1 shadow-xs"
+                    title="Compare current selection with Full Diagnostics profile"
+                  >
+                    <GitCompare className="w-3 h-3 text-indigo-400" />
+                    <span>Compare</span>
+                  </button>
+                </div>
               </div>
 
               {/* Quick-switch profile badges */}
@@ -4629,26 +4759,46 @@ export default function App() {
             </div>
 
             {/* Search Input */}
-            <div className="px-5 py-2.5 bg-zinc-950/40 border-b border-zinc-800 flex items-center gap-2">
-              <Search className="w-4 h-4 text-zinc-400 shrink-0" />
-              <input
-                type="text"
-                id="input-search-csv-columns"
-                data-testid="input-search-csv-columns"
-                placeholder="Search metric columns..."
-                value={csvColumnsSearchQuery}
-                onChange={(e) => setCsvColumnsSearchQuery(e.target.value)}
-                className="w-full bg-transparent text-xs text-white placeholder-zinc-500 focus:outline-none font-mono"
-              />
-              {csvColumnsSearchQuery && (
-                <button
-                  type="button"
-                  onClick={() => setCsvColumnsSearchQuery('')}
-                  className="text-zinc-400 hover:text-white text-xs cursor-pointer px-1"
-                >
-                  ✕
-                </button>
-              )}
+            <div className="px-5 py-2.5 bg-zinc-950/40 border-b border-zinc-800 space-y-1.5">
+              <div className="flex items-center gap-2">
+                <Search className="w-4 h-4 text-zinc-400 shrink-0" />
+                <input
+                  type="text"
+                  id="input-search-csv-columns"
+                  data-testid="input-search-csv-columns"
+                  placeholder="Search metric columns..."
+                  value={csvColumnsSearchQuery}
+                  onChange={(e) => setCsvColumnsSearchQuery(e.target.value)}
+                  className="w-full bg-transparent text-xs text-white placeholder-zinc-500 focus:outline-none font-mono"
+                />
+                {csvColumnsSearchQuery && (
+                  <button
+                    type="button"
+                    id="btn-clear-csv-search-icon"
+                    data-testid="btn-clear-csv-search-icon"
+                    onClick={() => setCsvColumnsSearchQuery('')}
+                    className="text-zinc-400 hover:text-white text-xs cursor-pointer px-1"
+                    title="Clear search query"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+              <div className="text-[11px] font-mono text-zinc-400 flex items-center justify-between">
+                <span>Matches found: <strong className="text-white font-bold">{filteredCsvColumns.length}</strong> of {csvColumnOrder.length}</span>
+                {csvColumnsSearchQuery && (
+                  <button
+                    type="button"
+                    id="btn-clear-csv-search"
+                    data-testid="btn-clear-csv-search"
+                    onClick={() => setCsvColumnsSearchQuery('')}
+                    className="text-indigo-400 hover:text-indigo-300 underline cursor-pointer"
+                    title="Clear search query"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Shareable Deep-Link URL Banner (shown when generated) */}
@@ -4765,27 +4915,11 @@ export default function App() {
             {/* Drag & Drop Reorderable Column List */}
             <div className="p-5 space-y-2 max-h-[300px] overflow-y-auto">
               <div className="text-[10px] text-zinc-400 font-mono mb-1 flex items-center justify-between">
-                <span>Drag items or use arrows to reorder sequence:</span>
+                <span>Drag items, arrow buttons, or press Alt+Up/Down:</span>
                 <span>{selectedCsvMetrics.length} selected</span>
               </div>
               {(() => {
-                const columnMetaMap: Record<string, { label: string; desc: string }> = {
-                  latency: { label: 'Execution Latency (ms)', desc: 'Query execution time and thresholds' },
-                  totalRecords: { label: 'Total Records Scanned', desc: 'Row count scanned during execution' },
-                  cacheHit: { label: 'Cache Hit Status', desc: 'Whether query result was served from cache' },
-                  queryCount: { label: 'N+1 Cascaded Query Count', desc: 'Active child queries and cascade count' },
-                  errorStatus: { label: 'System Error Status', desc: 'Active system errors or simulated faults' },
-                  flags: { label: 'Optimization Flags State', desc: 'Boolean state of all engine flags' }
-                };
-
-                const filtered = csvColumnOrder.filter(id => {
-                  if (!csvColumnsSearchQuery.trim()) return true;
-                  const q = csvColumnsSearchQuery.toLowerCase().trim();
-                  const meta = columnMetaMap[id] || { label: id, desc: '' };
-                  return meta.label.toLowerCase().includes(q) || meta.desc.toLowerCase().includes(q) || id.toLowerCase().includes(q);
-                });
-
-                if (filtered.length === 0) {
+                if (filteredCsvColumns.length === 0) {
                   return (
                     <div className="py-6 text-center text-zinc-500 text-xs font-mono">
                       No metric columns matching "{csvColumnsSearchQuery}"
@@ -4793,8 +4927,8 @@ export default function App() {
                   );
                 }
 
-                return filtered.map((id, index) => {
-                  const meta = columnMetaMap[id] || { label: id, desc: '' };
+                return filteredCsvColumns.map((id, index) => {
+                  const meta = csvColumnMetaMap[id] || { label: id, desc: '', n1Relevance: 'Custom metric tracked during execution.' };
                   const isSelected = selectedCsvMetrics.includes(id);
                   const isDragging = draggedColumnId === id;
                   const isDragOver = dragOverColumnId === id;
@@ -4805,6 +4939,16 @@ export default function App() {
                       id={`column-item-${id}`}
                       data-testid={`column-item-${id}`}
                       draggable={true}
+                      tabIndex={0}
+                      onKeyDown={(e) => {
+                        if (e.altKey && e.key === 'ArrowUp') {
+                          e.preventDefault();
+                          handleMoveColumn(id, 'up');
+                        } else if (e.altKey && e.key === 'ArrowDown') {
+                          e.preventDefault();
+                          handleMoveColumn(id, 'down');
+                        }
+                      }}
                       onDragStart={(e) => {
                         e.dataTransfer.setData('text/plain', id);
                         setDraggedColumnId(id);
@@ -4879,6 +5023,18 @@ export default function App() {
                           <span className="font-bold text-xs block text-white truncate">{meta.label}</span>
                           <span className="text-[10px] text-zinc-400 block truncate">{meta.desc}</span>
                         </label>
+
+                        {/* Hover-able Tooltip Info Icon */}
+                        <div className="relative group shrink-0 ml-1.5">
+                          <Info className="w-3.5 h-3.5 text-indigo-400 cursor-help" />
+                          <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 p-3 bg-zinc-900 border border-indigo-500/60 text-indigo-100 text-xs rounded-xl shadow-2xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 leading-relaxed font-sans">
+                            <div className="font-extrabold text-indigo-300 mb-1">{meta.label}</div>
+                            <div className="text-zinc-300 mb-1.5 text-[11px]">{meta.desc}</div>
+                            <div className="text-[10px] text-amber-300 font-mono border-t border-zinc-800 pt-1.5">
+                              <strong>N+1 Analysis:</strong> {meta.n1Relevance}
+                            </div>
+                          </div>
+                        </div>
                       </div>
 
                       {/* Direction Move Buttons for Accessibility/Quick Click */}
@@ -4899,7 +5055,7 @@ export default function App() {
                           id={`btn-move-down-${id}`}
                           data-testid={`btn-move-down-${id}`}
                           onClick={() => handleMoveColumn(id, 'down')}
-                          disabled={index === filtered.length - 1}
+                          disabled={index === filteredCsvColumns.length - 1}
                           className="p-1 bg-zinc-900 hover:bg-zinc-800 disabled:opacity-30 text-zinc-300 hover:text-white rounded border border-zinc-700 cursor-pointer transition-colors"
                           title="Move column down"
                         >
@@ -4912,10 +5068,79 @@ export default function App() {
               })()}
             </div>
 
+            {/* Preview Export Section */}
+            <div
+              id="preview-export-csv-section"
+              data-testid="preview-export-csv-section"
+              className="px-5 py-3.5 bg-zinc-950 border-t border-zinc-800 space-y-2.5"
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5 font-bold text-zinc-200 text-xs">
+                  <FileSpreadsheet className="w-4 h-4 text-indigo-400" />
+                  <span>Preview Export Structure (3 Sample Rows):</span>
+                </div>
+                <span className="text-[10px] font-mono text-zinc-400">
+                  {selectedCsvMetrics.length} columns active
+                </span>
+              </div>
+
+              {selectedCsvMetrics.length === 0 ? (
+                <div className="p-3 bg-zinc-900 border border-zinc-800 rounded-xl text-center text-xs text-zinc-400 font-mono">
+                  No columns selected. Select at least one column above to preview CSV export structure.
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-zinc-800 bg-zinc-900/90 p-2 shadow-xs">
+                  <table className="w-full text-left font-mono text-[11px] whitespace-nowrap">
+                    <thead>
+                      <tr className="border-b border-zinc-800 text-indigo-300">
+                        {csvColumnOrder.filter(id => selectedCsvMetrics.includes(id)).map((id) => {
+                          const meta = csvColumnMetaMap[id] || { label: id };
+                          return (
+                            <th key={id} className="px-3 py-1.5 font-bold tracking-wide">
+                              {meta.label.split(' ')[0]} ({id})
+                            </th>
+                          );
+                        })}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-zinc-800/60 text-zinc-300">
+                      {[
+                        { latency: '142.5ms', totalRecords: '1,250', cacheHit: 'true', queryCount: '12', errorStatus: 'OK', flags: 'eager=true' },
+                        { latency: '389.2ms', totalRecords: '4,800', cacheHit: 'false', queryCount: '48', errorStatus: 'N+1_WARN', flags: 'eager=false' },
+                        { latency: '64.1ms', totalRecords: '320', cacheHit: 'true', queryCount: '1', errorStatus: 'OK', flags: 'eager=true' }
+                      ].map((row, rowIdx) => (
+                        <tr key={rowIdx} className="hover:bg-zinc-800/40 transition-colors">
+                          {csvColumnOrder.filter(id => selectedCsvMetrics.includes(id)).map((id) => {
+                            const val = (row as any)[id] || 'N/A';
+                            return (
+                              <td key={id} className="px-3 py-1.5 text-zinc-200">
+                                {val}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
             {/* Footer */}
             <div className="p-4 bg-zinc-950 border-t border-zinc-800 flex items-center justify-between">
-              <div className="text-[11px] font-mono text-zinc-400">
-                {selectedCsvMetrics.length} of 6 metric columns selected
+              <div className="text-[11px] font-mono text-zinc-400 space-y-1">
+                <div>{selectedCsvMetrics.length} of {csvColumnOrder.length} metric columns selected</div>
+                <div
+                  id="progress-csv-columns"
+                  data-testid="progress-csv-columns"
+                  className="w-32 h-1.5 bg-zinc-800 rounded-full overflow-hidden"
+                  title={`${Math.round((selectedCsvMetrics.length / csvColumnOrder.length) * 100)}% of available columns selected`}
+                >
+                  <div
+                    className="h-full bg-indigo-500 transition-all duration-300"
+                    style={{ width: `${Math.round((selectedCsvMetrics.length / csvColumnOrder.length) * 100)}%` }}
+                  />
+                </div>
               </div>
               <div className="flex items-center gap-2">
                 <button
@@ -4972,6 +5197,105 @@ export default function App() {
                   Save &amp; Close
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Profile Comparison Diff Modal */}
+      {isCompareModalOpen && (
+        <div
+          id="modal-compare-profile-diff"
+          data-testid="modal-compare-profile-diff"
+          className="fixed inset-0 z-60 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn font-sans"
+        >
+          <div className="bg-zinc-900 rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden border border-zinc-700 text-white animate-scaleUp">
+            {/* Header */}
+            <div className="p-5 bg-gradient-to-r from-zinc-900 via-indigo-950 to-zinc-900 flex items-center justify-between border-b border-zinc-800">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-indigo-600/30 border border-indigo-500/40 rounded-xl text-indigo-300">
+                  <GitCompare className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-white tracking-wide">Profile Comparison Diff</h3>
+                  <p className="text-xs text-zinc-400">Comparing current selection vs. 'Full Diagnostics' profile</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCompareModalOpen(false)}
+                className="text-zinc-400 hover:text-white cursor-pointer p-1"
+                aria-label="Close diff modal"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Diff Body */}
+            <div className="p-5 space-y-4 text-xs font-mono">
+              {(() => {
+                const fullDiagCols = ['latency', 'totalRecords', 'cacheHit', 'queryCount', 'errorStatus', 'flags'];
+                const shared = selectedCsvMetrics.filter(id => fullDiagCols.includes(id));
+                const added = selectedCsvMetrics.filter(id => !fullDiagCols.includes(id));
+                const missing = fullDiagCols.filter(id => !selectedCsvMetrics.includes(id));
+
+                return (
+                  <>
+                    {/* Shared */}
+                    <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl space-y-1.5">
+                      <div className="font-bold text-emerald-400 flex items-center justify-between">
+                        <span>✓ Shared Active Columns ({shared.length})</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1 pt-1">
+                        {shared.length > 0 ? shared.map(id => (
+                          <span key={id} className="px-2 py-0.5 bg-emerald-950 text-emerald-200 border border-emerald-800/60 rounded text-[11px]">
+                            {csvColumnMetaMap[id]?.label || id}
+                          </span>
+                        )) : <span className="text-zinc-500">None</span>}
+                      </div>
+                    </div>
+
+                    {/* Added / Custom */}
+                    <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl space-y-1.5">
+                      <div className="font-bold text-indigo-400 flex items-center justify-between">
+                        <span>+ Custom / Added Columns ({added.length})</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1 pt-1">
+                        {added.length > 0 ? added.map(id => (
+                          <span key={id} className="px-2 py-0.5 bg-indigo-950 text-indigo-200 border border-indigo-800/60 rounded text-[11px]">
+                            {csvColumnMetaMap[id]?.label || id}
+                          </span>
+                        )) : <span className="text-zinc-500">None</span>}
+                      </div>
+                    </div>
+
+                    {/* Missing / Excluded */}
+                    <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl space-y-1.5">
+                      <div className="font-bold text-rose-400 flex items-center justify-between">
+                        <span>- Missing from Full Diagnostics ({missing.length})</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1 pt-1">
+                        {missing.length > 0 ? missing.map(id => (
+                          <span key={id} className="px-2 py-0.5 bg-rose-950 text-rose-200 border border-rose-800/60 rounded text-[11px]">
+                            {csvColumnMetaMap[id]?.label || id}
+                          </span>
+                        )) : <span className="text-zinc-500">None (Full alignment)</span>}
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 bg-zinc-950 border-t border-zinc-800 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setIsCompareModalOpen(false)}
+                className="px-4 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold text-xs rounded-xl transition-colors cursor-pointer"
+              >
+                Close Diff
+              </button>
             </div>
           </div>
         </div>

@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   SerializationLogEntry,
   SerializationLogSeverity,
@@ -41,7 +41,8 @@ import {
   Download,
   Flame,
   Copy,
-  ListOrdered
+  ListOrdered,
+  Search
 } from 'lucide-react';
 
 interface SerializationErrorLogPanelProps {
@@ -210,6 +211,7 @@ export const SerializationErrorLogPanel: React.FC<SerializationErrorLogPanelProp
   const [activeMainTab, setActiveMainTab] = useState<'errors' | 'lifecycle' | 'reasoning' | 'outliers'>('errors');
   const [expandedLogId, setExpandedLogId] = useState<string | null>(autoExpandLogId || null);
   const [isShaking, setIsShaking] = useState<boolean>(false);
+  const [logSearchQuery, setLogSearchQuery] = useState<string>('');
 
   useEffect(() => {
     if (autoExpandLogId) {
@@ -357,9 +359,28 @@ export const SerializationErrorLogPanel: React.FC<SerializationErrorLogPanelProp
         String(log.details?.cause || '').toUpperCase().includes('N+1') ||
         String(log.details?.triggerSource || '').toUpperCase().includes('N+1');
       const matchesN1 = !effectiveShowOnlyN1 || isN1Log;
-      return matchesSeverity && matchesFormat && matchesN1;
+
+      const q = logSearchQuery.toLowerCase().trim();
+      const matchesSearch = !q ||
+        String(log.message || '').toLowerCase().includes(q) ||
+        String(log.type || '').toLowerCase().includes(q) ||
+        String(log.details?.cause || '').toLowerCase().includes(q) ||
+        String(log.details?.triggerSource || '').toLowerCase().includes(q) ||
+        String(log.details?.component || '').toLowerCase().includes(q) ||
+        String(log.details?.table || '').toLowerCase().includes(q);
+
+      return matchesSeverity && matchesFormat && matchesN1 && matchesSearch;
     });
-  }, [safeLogs, severityFilter, formatFilter, effectiveShowOnlyN1]);
+  }, [safeLogs, severityFilter, formatFilter, effectiveShowOnlyN1, logSearchQuery]);
+
+  const [isSyncScrollActive, setIsSyncScrollActive] = useState<boolean>(true);
+  const logContainerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (isSyncScrollActive && logContainerRef.current) {
+      logContainerRef.current.scrollTop = 0;
+    }
+  }, [filteredLogs.length, isSyncScrollActive]);
 
   // Filtered entries for Optimization Lifecycle tab
   const filteredLifecycleEvents = useMemo(() => {
@@ -974,6 +995,8 @@ ${impactedComponentsText || 'No severe table bottlenecks detected.'}
         return 'bg-amber-100 text-amber-900 border-amber-300';
       case 'warning':
         return 'bg-orange-100 text-orange-900 border-orange-200';
+      case 'info':
+        return 'bg-sky-100 text-sky-900 border-sky-200';
       default:
         return 'bg-zinc-100 text-zinc-800 border-zinc-200';
     }
@@ -1155,7 +1178,36 @@ ${impactedComponentsText || 'No severe table bottlenecks detected.'}
               <option value="error">Error</option>
               <option value="anomaly">Anomaly</option>
               <option value="warning">Warning</option>
+              <option value="info">Info</option>
             </select>
+          </div>
+
+          {/* Search Logs Bar */}
+          <div
+            id="search-error-logs-container"
+            data-testid="search-error-logs-container"
+            className="inline-flex items-center gap-1.5 bg-white border border-zinc-200 px-2 py-1 rounded-md text-xs shadow-2xs mr-1"
+          >
+            <Search className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+            <input
+              type="text"
+              id="input-search-error-logs"
+              data-testid="input-search-error-logs"
+              placeholder="Search component or message..."
+              value={logSearchQuery}
+              onChange={(e) => setLogSearchQuery(e.target.value)}
+              className="bg-transparent text-[11px] text-zinc-900 placeholder-zinc-400 focus:outline-none w-40 font-mono"
+            />
+            {logSearchQuery && (
+              <button
+                type="button"
+                onClick={() => setLogSearchQuery('')}
+                className="text-zinc-400 hover:text-zinc-700 text-xs cursor-pointer px-0.5"
+                title="Clear search query"
+              >
+                ✕
+              </button>
+            )}
           </div>
 
           {/* Download Export Report Button */}
@@ -1245,6 +1297,23 @@ ${impactedComponentsText || 'No severe table bottlenecks detected.'}
             <kbd className="hidden lg:inline-block ml-0.5 px-1 py-0.2 text-[9px] bg-emerald-800/80 rounded border border-emerald-400/40 text-emerald-100 font-mono">
               ^⇧E
             </kbd>
+          </button>
+
+          {/* Sync Scroll Toggle Button */}
+          <button
+            type="button"
+            id="btn-toggle-sync-scroll"
+            data-testid="btn-toggle-sync-scroll"
+            onClick={() => setIsSyncScrollActive(!isSyncScrollActive)}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all cursor-pointer shadow-2xs mr-1 active:scale-95 border ${
+              isSyncScrollActive
+                ? 'bg-indigo-600 text-white border-indigo-500 hover:bg-indigo-700'
+                : 'bg-zinc-100 text-zinc-700 border-zinc-300 hover:bg-zinc-200'
+            }`}
+            title="When active, automatically locks vertical scroll to the most recently added log entry"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isSyncScrollActive ? 'animate-spin' : ''}`} style={{ animationDuration: '6s' }} />
+            <span>Sync Scroll: {isSyncScrollActive ? 'ON' : 'OFF'}</span>
           </button>
 
           {activeMainTab === 'errors' ? (
@@ -1669,7 +1738,7 @@ ${impactedComponentsText || 'No severe table bottlenecks detected.'}
                   </p>
                 </div>
               ) : (
-                <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
+                <div ref={logContainerRef} className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
                   {filteredLogs.map((log) => {
                     const isDetailOpen = expandedLogId === log.id;
                     const isCsv = log.format === 'csv';

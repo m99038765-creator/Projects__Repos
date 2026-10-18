@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Keyboard, X, Zap, Database, Cpu, Layers, Sparkles, RefreshCw, CheckCircle2, AlertTriangle, Play, HelpCircle, FileSpreadsheet } from 'lucide-react';
+import { Keyboard, X, Zap, Database, Cpu, Layers, Sparkles, RefreshCw, CheckCircle2, AlertTriangle, Play, HelpCircle, FileSpreadsheet, LayoutGrid } from 'lucide-react';
 import { OptimizationFlags } from '../types';
 
 interface KeyboardShortcutsModalProps {
@@ -19,7 +19,7 @@ export const KeyboardShortcutsModal: React.FC<KeyboardShortcutsModalProps> = ({
   onToggleAll,
   onOpenBenchmark,
 }) => {
-  const [activeTab, setActiveTab] = useState<'all' | 'database' | 'ui' | 'system'>('all');
+  const [activeTab, setActiveTab] = useState<'overview' | 'all' | 'database' | 'ui' | 'system'>('overview');
   const [lastKeyPressed, setLastKeyPressed] = useState<string | null>(null);
   const [isMac, setIsMac] = useState(false);
 
@@ -60,7 +60,9 @@ export const KeyboardShortcutsModal: React.FC<KeyboardShortcutsModalProps> = ({
 
   const shortcutsList = [
     {
+      id: 'btree',
       category: 'database' as const,
+      group: 'Optimization Toggles',
       categoryLabel: 'Database & Engine',
       keys: [`${modKey}+I`],
       action: 'Toggle B-Tree Indexing',
@@ -71,7 +73,9 @@ export const KeyboardShortcutsModal: React.FC<KeyboardShortcutsModalProps> = ({
       impact: '320x Latency Reduction'
     },
     {
+      id: 'caching',
       category: 'database' as const,
+      group: 'Optimization Toggles',
       categoryLabel: 'Database & Engine',
       keys: [`${modKey}+C`, 'Alt+C'],
       action: 'Toggle LRU Query Caching',
@@ -82,7 +86,9 @@ export const KeyboardShortcutsModal: React.FC<KeyboardShortcutsModalProps> = ({
       impact: 'Sub-ms Instant Response'
     },
     {
+      id: 'batch',
       category: 'database' as const,
+      group: 'Optimization Toggles',
       categoryLabel: 'Database & Engine',
       keys: [`${modKey}+B`],
       action: 'Toggle Batch Eager Loading',
@@ -93,7 +99,9 @@ export const KeyboardShortcutsModal: React.FC<KeyboardShortcutsModalProps> = ({
       impact: 'Prevents Pool Exhaustion'
     },
     {
+      id: 'virtualized',
       category: 'ui' as const,
+      group: 'Optimization Toggles',
       categoryLabel: 'UI & Rendering',
       keys: [`${modKey}+V`],
       action: 'Toggle DOM Virtualization',
@@ -104,7 +112,9 @@ export const KeyboardShortcutsModal: React.FC<KeyboardShortcutsModalProps> = ({
       impact: 'Maintains 60 FPS Scrolling'
     },
     {
+      id: 'deferred',
       category: 'ui' as const,
+      group: 'Optimization Toggles',
       categoryLabel: 'UI & Rendering',
       keys: [`${modKey}+D`],
       action: 'Toggle Deferred Rendering',
@@ -115,7 +125,9 @@ export const KeyboardShortcutsModal: React.FC<KeyboardShortcutsModalProps> = ({
       impact: 'Non-Blocking Input State'
     },
     {
+      id: 'toggleAll',
       category: 'system' as const,
+      group: 'Navigation & Global Actions',
       categoryLabel: 'Global Operations',
       keys: [`${modKey}+Shift+O`],
       action: 'Toggle All Optimizations',
@@ -126,7 +138,9 @@ export const KeyboardShortcutsModal: React.FC<KeyboardShortcutsModalProps> = ({
       impact: 'Global State Flip'
     },
     {
+      id: 'benchmark',
       category: 'system' as const,
+      group: 'Navigation & Global Actions',
       categoryLabel: 'Global Operations',
       keys: [`${modKey}+Shift+B`],
       action: 'Run Benchmark Simulation',
@@ -136,7 +150,9 @@ export const KeyboardShortcutsModal: React.FC<KeyboardShortcutsModalProps> = ({
       impact: 'Performance Audit'
     },
     {
+      id: 'fixAll',
       category: 'system' as const,
+      group: 'Navigation & Global Actions',
       categoryLabel: 'Global Operations',
       keys: [`${modKey}+Shift+F`],
       action: 'Fix All (Ctrl+Shift+F)',
@@ -147,7 +163,9 @@ export const KeyboardShortcutsModal: React.FC<KeyboardShortcutsModalProps> = ({
       impact: 'Instant Auto-Fix'
     },
     {
+      id: 'export',
       category: 'system' as const,
+      group: 'Exporting & Reporting',
       categoryLabel: 'Global Operations',
       keys: [`${modKey}+Shift+E`],
       action: 'Export Selected Logs (CSV)',
@@ -156,7 +174,9 @@ export const KeyboardShortcutsModal: React.FC<KeyboardShortcutsModalProps> = ({
       impact: 'Instant CSV Export'
     },
     {
+      id: 'cheatSheet',
       category: 'system' as const,
+      group: 'Navigation & Global Actions',
       categoryLabel: 'Global Operations',
       keys: ['?', 'Shift+/'],
       action: 'Toggle Shortcuts Cheat Sheet',
@@ -168,9 +188,123 @@ export const KeyboardShortcutsModal: React.FC<KeyboardShortcutsModalProps> = ({
 
   const filteredShortcuts = activeTab === 'all'
     ? shortcutsList
+    : activeTab === 'overview'
+    ? shortcutsList
     : shortcutsList.filter((s) => s.category === activeTab);
 
+  const groupedOverview = {
+    'Optimization Toggles': shortcutsList.filter(s => s.group === 'Optimization Toggles'),
+    'Navigation & Global Actions': shortcutsList.filter(s => s.group === 'Navigation & Global Actions'),
+    'Exporting & Reporting': shortcutsList.filter(s => s.group === 'Exporting & Reporting'),
+  };
+
   const allOptimized = Object.values(flags).every(Boolean);
+
+  const renderShortcutCard = (item: typeof shortcutsList[0], idx: number) => {
+    const Icon = item.icon;
+    const hasStatus = typeof item.status === 'boolean';
+    const isActive = item.status;
+
+    return (
+      <div
+        key={idx}
+        className="p-3.5 bg-zinc-800/60 hover:bg-zinc-800 border border-zinc-700/60 hover:border-zinc-600 rounded-xl transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 group"
+      >
+        <div className="flex items-start gap-3">
+          <div className={`p-2 rounded-lg shrink-0 mt-0.5 ${
+            isActive
+              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+              : hasStatus
+              ? 'bg-rose-500/10 text-rose-400 border border-rose-500/30'
+              : 'bg-zinc-700 text-zinc-300'
+          }`}>
+            <Icon className="w-4 h-4" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-bold text-sm text-zinc-100">{item.action}</span>
+              {hasStatus && (
+                <span className={`inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[10px] font-mono font-bold uppercase ${
+                  isActive
+                    ? 'bg-emerald-950 text-emerald-300 border border-emerald-700'
+                    : 'bg-rose-950 text-rose-300 border border-rose-700'
+                }`}>
+                  {isActive ? <CheckCircle2 className="w-3 h-3" /> : <AlertTriangle className="w-3 h-3" />}
+                  {isActive ? 'Active' : 'Disabled'}
+                </span>
+              )}
+              <span className="font-mono text-[10px] bg-zinc-900 text-zinc-400 px-1.5 py-0.2 rounded border border-zinc-700">
+                {item.impact}
+              </span>
+            </div>
+            <p className="text-xs text-zinc-400 mt-1 max-w-md leading-relaxed">
+              {item.description}
+            </p>
+          </div>
+        </div>
+
+        {/* Hotkey Badge & Interactive Trigger Button */}
+        <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+          <div className="flex items-center gap-1">
+            {item.keys.map((k, kIdx) => (
+              <kbd
+                key={kIdx}
+                className="font-mono text-xs font-bold bg-zinc-950 text-amber-300 border border-zinc-700 px-2 py-1 rounded-md shadow-inner tracking-wide"
+              >
+                {k}
+              </kbd>
+            ))}
+          </div>
+
+          {item.flagKey && (
+            <button
+              type="button"
+              id={`btn-shortcut-toggle-${item.flagKey}`}
+              data-testid={`btn-shortcut-toggle-${item.flagKey}`}
+              onClick={() => onToggleFlag(item.flagKey!)}
+              className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-colors cursor-pointer border ${
+                isActive
+                  ? 'bg-rose-900/40 hover:bg-rose-800/60 text-rose-300 border-rose-700/60'
+                  : 'bg-emerald-900/40 hover:bg-emerald-800/60 text-emerald-300 border-emerald-700/60'
+              }`}
+              title={`Simulate shortcut execution for ${item.action}`}
+            >
+              {isActive ? 'Disable' : 'Enable'}
+            </button>
+          )}
+
+          {item.isToggleAll && (
+            <button
+              type="button"
+              id="btn-shortcut-toggle-all"
+              data-testid="btn-shortcut-toggle-all"
+              onClick={() => onToggleAll(!allOptimized)}
+              className="px-2.5 py-1 text-xs font-bold rounded-lg bg-amber-500 hover:bg-amber-600 text-zinc-950 transition-colors cursor-pointer shadow-xs"
+              title="Toggle all optimization flags"
+            >
+              {allOptimized ? 'Simulate All' : 'Fix All'}
+            </button>
+          )}
+
+          {item.isBenchmark && (
+            <button
+              type="button"
+              id="btn-shortcut-benchmark"
+              data-testid="btn-shortcut-benchmark"
+              onClick={() => {
+                onClose();
+                onOpenBenchmark?.();
+              }}
+              className="px-2.5 py-1 text-xs font-bold rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition-colors cursor-pointer shadow-xs"
+              title="Open and run benchmark simulation"
+            >
+              Launch
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div
@@ -220,7 +354,19 @@ export const KeyboardShortcutsModal: React.FC<KeyboardShortcutsModalProps> = ({
 
         {/* Tab Switcher & Quick Status Bar */}
         <div className="px-5 py-2.5 bg-zinc-950 border-b border-zinc-800/80 flex flex-wrap items-center justify-between gap-3 text-xs">
-          <div className="flex items-center gap-1 bg-zinc-900 p-0.5 rounded-lg border border-zinc-800">
+          <div className="flex items-center gap-1 bg-zinc-900 p-0.5 rounded-lg border border-zinc-800 overflow-x-auto">
+            <button
+              type="button"
+              onClick={() => setActiveTab('overview')}
+              className={`px-3 py-1 rounded-md font-medium transition-colors cursor-pointer flex items-center gap-1.5 ${
+                activeTab === 'overview'
+                  ? 'bg-amber-500 text-zinc-950 font-bold shadow-xs'
+                  : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              <LayoutGrid className="w-3.5 h-3.5" />
+              <span>Overview</span>
+            </button>
             <button
               type="button"
               onClick={() => setActiveTab('all')}
@@ -278,112 +424,26 @@ export const KeyboardShortcutsModal: React.FC<KeyboardShortcutsModalProps> = ({
         </div>
 
         {/* Shortcuts List Content */}
-        <div className="flex-1 p-5 overflow-y-auto space-y-2.5">
-          {filteredShortcuts.map((item, idx) => {
-            const Icon = item.icon;
-            const hasStatus = typeof item.status === 'boolean';
-            const isActive = item.status;
-
-            return (
-              <div
-                key={idx}
-                className="p-3.5 bg-zinc-800/60 hover:bg-zinc-800 border border-zinc-700/60 hover:border-zinc-600 rounded-xl transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 group"
-              >
-                <div className="flex items-start gap-3">
-                  <div className={`p-2 rounded-lg shrink-0 mt-0.5 ${
-                    isActive
-                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
-                      : hasStatus
-                      ? 'bg-rose-500/10 text-rose-400 border border-rose-500/30'
-                      : 'bg-zinc-700 text-zinc-300'
-                  }`}>
-                    <Icon className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-bold text-sm text-zinc-100">{item.action}</span>
-                      {hasStatus && (
-                        <span className={`inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[10px] font-mono font-bold uppercase ${
-                          isActive
-                            ? 'bg-emerald-950 text-emerald-300 border border-emerald-700'
-                            : 'bg-rose-950 text-rose-300 border border-rose-700'
-                        }`}>
-                          {isActive ? <CheckCircle2 className="w-3 h-3" /> : <AlertTriangle className="w-3 h-3" />}
-                          {isActive ? 'Active' : 'Disabled'}
-                        </span>
-                      )}
-                      <span className="font-mono text-[10px] bg-zinc-900 text-zinc-400 px-1.5 py-0.2 rounded border border-zinc-700">
-                        {item.impact}
-                      </span>
-                    </div>
-                    <p className="text-xs text-zinc-400 mt-1 max-w-md leading-relaxed">
-                      {item.description}
-                    </p>
-                  </div>
+        <div className="flex-1 p-5 overflow-y-auto space-y-4">
+          {activeTab === 'overview' ? (
+            Object.entries(groupedOverview).map(([groupName, groupItems], gIdx) => (
+              <div key={gIdx} className="space-y-2">
+                <div className="flex items-center gap-2 pb-1 border-b border-zinc-800 text-amber-400 font-bold text-xs uppercase tracking-wider">
+                  <span>{groupName}</span>
+                  <span className="text-[10px] font-mono px-1.5 py-0.2 bg-zinc-800 rounded text-zinc-400">
+                    {groupItems.length}
+                  </span>
                 </div>
-
-                {/* Hotkey Badge & Interactive Trigger Button */}
-                <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
-                  <div className="flex items-center gap-1">
-                    {item.keys.map((k, kIdx) => (
-                      <kbd
-                        key={kIdx}
-                        className="font-mono text-xs font-bold bg-zinc-950 text-amber-300 border border-zinc-700 px-2 py-1 rounded-md shadow-inner tracking-wide"
-                      >
-                        {k}
-                      </kbd>
-                    ))}
-                  </div>
-
-                  {item.flagKey && (
-                    <button
-                      type="button"
-                      id={`btn-shortcut-toggle-${item.flagKey}`}
-                      data-testid={`btn-shortcut-toggle-${item.flagKey}`}
-                      onClick={() => onToggleFlag(item.flagKey!)}
-                      className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-colors cursor-pointer border ${
-                        isActive
-                          ? 'bg-rose-900/40 hover:bg-rose-800/60 text-rose-300 border-rose-700/60'
-                          : 'bg-emerald-900/40 hover:bg-emerald-800/60 text-emerald-300 border-emerald-700/60'
-                      }`}
-                      title={`Simulate shortcut execution for ${item.action}`}
-                    >
-                      {isActive ? 'Disable' : 'Enable'}
-                    </button>
-                  )}
-
-                  {item.isToggleAll && (
-                    <button
-                      type="button"
-                      id="btn-shortcut-toggle-all"
-                      data-testid="btn-shortcut-toggle-all"
-                      onClick={() => onToggleAll(!allOptimized)}
-                      className="px-2.5 py-1 text-xs font-bold rounded-lg bg-amber-500 hover:bg-amber-600 text-zinc-950 transition-colors cursor-pointer shadow-xs"
-                      title="Toggle all optimization flags"
-                    >
-                      {allOptimized ? 'Simulate All' : 'Fix All'}
-                    </button>
-                  )}
-
-                  {item.isBenchmark && (
-                    <button
-                      type="button"
-                      id="btn-shortcut-benchmark"
-                      data-testid="btn-shortcut-benchmark"
-                      onClick={() => {
-                        onClose();
-                        onOpenBenchmark?.();
-                      }}
-                      className="px-2.5 py-1 text-xs font-bold rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition-colors cursor-pointer shadow-xs"
-                      title="Open and run benchmark simulation"
-                    >
-                      Launch
-                    </button>
-                  )}
+                <div className="space-y-2.5">
+                  {groupItems.map((item, idx) => renderShortcutCard(item, idx))}
                 </div>
               </div>
-            );
-          })}
+            ))
+          ) : (
+            <div className="space-y-2.5">
+              {filteredShortcuts.map((item, idx) => renderShortcutCard(item, idx))}
+            </div>
+          )}
         </div>
 
         {/* Footer */}

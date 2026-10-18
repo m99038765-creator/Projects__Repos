@@ -220,7 +220,7 @@ export interface DataTapeEntry {
   payloadPreview: string; // Snippet preview for auditor inspection
 }
 
-export type SerializationLogSeverity = 'error' | 'warning' | 'anomaly' | 'N+1';
+export type SerializationLogSeverity = 'error' | 'warning' | 'anomaly' | 'N+1' | 'info';
 
 export type SerializationAnomalyType =
   | 'SERIALIZATION_EXCEPTION'

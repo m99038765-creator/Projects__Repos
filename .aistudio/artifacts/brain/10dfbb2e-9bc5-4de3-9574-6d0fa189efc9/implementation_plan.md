@@ -37,6 +37,39 @@ This implementation plan details the addition of a clickable N+1 log count badge
   - Enabled a global `Ctrl+Shift+E` (or `Cmd+Shift+E` on Mac) keyboard shortcut that triggers bulk CSV export of selected or filtered logs from `SerializationErrorLogPanel`.
   - Added dedicated 'Export Selected' buttons (`#btn-export-selected-logs` in header, `#btn-export-selected-inline` in the error stream) and row-level selection checkboxes with a 'Select All Visible' toggle.
   - Displays instant shortcut toast feedback and in-panel toast with export count confirmation.
+- **'Sync Scroll' Toggle**:
+  - Added 'Sync Scroll' toggle button (`#btn-toggle-sync-scroll`) in the `SerializationErrorLogPanel` header.
+  - When active (ON), automatically locks the vertical scroll position of the log container to the most recently added entry, ensuring developers never miss new N+1 events.
+- **Export Profile Saved Toast Confirmation**:
+  - Added an in-modal success toast notification banner (`#toast-csv-profile-saved`) that appears instantly after successfully saving a new Export Configuration Profile in the Configure CSV Columns modal.
+  - Displays the saved profile name and included column count with auto-dismiss and manual dismiss controls.
+- **CSV Columns 'Matches found: X' Search Count Label**:
+  - Updated the Configure CSV Columns modal search input to display a dynamic `'Matches found: X' of Y` count label directly below the search bar, reflecting currently matching columns in real time.
+- **'Show Hidden' Toggle**:
+  - Added a 'Show Hidden' toggle button (`#btn-toggle-show-hidden-csv`) in the Configure CSV Columns modal toolbar that filters the view to show only previously deselected (hidden) columns, enabling quick re-adding of hidden metrics.
+- **Column Hover-able Tooltips (N+1 Relevance Explanations)**:
+  - Added a hover-able info tooltip (`Info` icon with floating description card) for each column item in the Configure CSV Columns modal.
+  - Explains the underlying database metric and provides detailed context on why it is relevant to N+1 query cascade bottleneck analysis.
+- **SerializationErrorLogPanel Search Bar**:
+  - Added a search input (`#input-search-error-logs`) to the `SerializationErrorLogPanel` header.
+  - Allows developers to filter audit log entries by component name, table name, error message text, or cause description in real time.
+- **CSV 'Preview Export' Structure Area**:
+  - Added a 'Preview Export' area (`#preview-export-csv-section`) to the Configure CSV Columns modal.
+  - Displays a static 3-row sample table showing exactly how the exported CSV structure and column headers appear in real time with the current column selection and order.
+- **Alt+Up/Down Keyboard Shortcuts for Column Reordering**:
+  - Added `Alt+Up` and `Alt+Down` keyboard shortcut listeners to focusable column items in the Configure CSV Columns modal, allowing users to reorder columns instantly without relying on the drag-and-drop mouse interface.
+- **Modal Footer Progress Indicator**:
+  - Added a progress-style indicator bar (`#progress-csv-columns`) in the Configure CSV Columns modal footer that dynamically fills based on the ratio of currently selected columns to the total available columns.
+- **Shortcuts Modal 'Overview' Tab**:
+  - Created an 'Overview' tab in the Keyboard Shortcuts modal that visually groups keyboard shortcuts by functionality into categorized sections ('Optimization Toggles', 'Navigation & Global Actions', 'Exporting & Reporting') for effortless scanning.
+- **Profile Comparison Diff View**:
+  - Added a 'Compare Profile' button (`#btn-compare-profile-builtin`) to the Configure CSV Columns modal profile section.
+  - Displays a detailed diff modal (`#modal-compare-profile-diff`) showing shared active columns, custom/added columns, and missing columns relative to the built-in 'Full Diagnostics' profile.
+- **Banner 'Simulate N+1 Event' Button**:
+  - Added a 'Simulate N+1 Event' button (`#btn-simulate-n1-event-badge`) next to the N+1 log badge in the top status banner.
+  - Manually triggers a new N+1 query cascade log entry for testing telemetry, sparklines, and badge breathing pulse animations.
+- **CSV Columns Auto-Save Mechanism**:
+  - Implemented persistent `useEffect` auto-save hooks in `App.tsx` that instantly synchronize `selectedCsvMetrics` and `csvColumnOrder` to `localStorage` immediately upon any user modification (selection, drag-and-drop, reordering, profile application, or resetting).
 
 ## 2. User Experience & Visual Design
 
