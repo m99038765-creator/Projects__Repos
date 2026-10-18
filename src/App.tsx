@@ -1680,6 +1680,23 @@ export default function App() {
           return;
         }
       }
+
+      // 9. Ctrl+Shift+E / ⌘Shift+E -> Trigger 'Export Selected' CSV download in SerializationErrorLogPanel
+      if (isModifier && e.shiftKey && key === 'e') {
+        if (!isInput) {
+          e.preventDefault();
+          const exportBtn =
+            document.getElementById('btn-export-selected-logs') ||
+            document.getElementById('btn-export-selected-inline');
+          if (exportBtn) {
+            exportBtn.click();
+          } else {
+            handleExportSerializationLogsCsv();
+          }
+          notifyShortcut(e.metaKey ? '⌘Shift+E' : 'Ctrl+Shift+E', 'Export Selected Logs (CSV)', true);
+          return;
+        }
+      }
     };
 
     window.addEventListener('keydown', handleGlobalKeyDown);
@@ -1881,6 +1898,23 @@ export default function App() {
     }, 750);
   };
   const [mutationThreshold] = useState<number>(100);
+  const [notificationsMuted, setNotificationsMuted] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('notificationsMuted') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const handleMuteAllNotifications = () => {
+    try {
+      localStorage.setItem('notificationsMuted', 'true');
+    } catch (e) {
+      console.error('Failed to save notificationsMuted state to localStorage:', e);
+    }
+    setNotificationsMuted(true);
+    setProactiveToast(null);
+  };
   const [activeView, setActiveView] = useState<'grid' | 'trends' | 'comparison' | 'schema'>('grid');
   const [serializationLogs, setSerializationLogs] = useState<SerializationLogEntry[]>(() => getInitialSerializationLogs());
   const n1LogsCount = (serializationLogs || []).filter(l =>
@@ -1919,6 +1953,82 @@ export default function App() {
       }
     };
     setSerializationLogs(prev => [newEntry, ...prev]);
+  };
+
+  const [n1AnomalyToast, setN1AnomalyToast] = useState<{
+    logId: string;
+    message: string;
+    subqueries?: number;
+    durationMs?: number;
+    timeFormatted?: string;
+  } | null>(null);
+
+  const knownLogIdsRef = useRef<Set<string>>(new Set((serializationLogs || []).map(l => l.id)));
+
+  useEffect(() => {
+    const knownIds = knownLogIdsRef.current;
+    const newLogs = (serializationLogs || []).filter(l => !knownIds.has(l.id));
+    knownLogIdsRef.current = new Set((serializationLogs || []).map(l => l.id));
+
+    if (newLogs.length === 0) return;
+
+    const newN1Anomaly = newLogs.find(l => {
+      const isAnomaly = String(l.severity).toLowerCase() === 'anomaly';
+      const isN1 =
+        String(l.type).toUpperCase().includes('N+1') ||
+        String(l.type).toUpperCase().includes('N_PLUS_ONE') ||
+        String(l.severity).toUpperCase().includes('N+1') ||
+        String(l.message).toUpperCase().includes('N+1') ||
+        String(l.details?.cause || '').toUpperCase().includes('N+1') ||
+        String(l.details?.triggerSource || '').toUpperCase().includes('N+1');
+      return isAnomaly && isN1;
+    });
+
+    if (newN1Anomaly && !notificationsMuted) {
+      setN1AnomalyToast({
+        logId: newN1Anomaly.id,
+        message: newN1Anomaly.message,
+        subqueries: newN1Anomaly.details?.activeQueriesCount || 101,
+        durationMs: newN1Anomaly.details?.durationMs || 470,
+        timeFormatted: newN1Anomaly.timeFormatted || new Date().toLocaleTimeString()
+      });
+      playThresholdAlarmSound();
+    }
+  }, [serializationLogs, notificationsMuted]);
+
+  useEffect(() => {
+    if (!n1AnomalyToast) return;
+    const timer = setTimeout(() => {
+      setN1AnomalyToast(null);
+    }, 12000);
+    return () => clearTimeout(timer);
+  }, [n1AnomalyToast]);
+
+  const handleJumpToN1Log = (logId: string) => {
+    setActiveView('grid');
+    setShowOnlyN1Logs(true);
+    setAutoExpandLogId(logId);
+    setTimeout(() => {
+      const panelEl = document.getElementById('serialization-error-log-panel') || document.getElementById('serialization-error-log-section');
+      if (panelEl) {
+        panelEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        panelEl.classList.add('animate-panel-shake', 'animate-panel-glow', 'ring-4', 'ring-rose-500', 'transition-all', 'duration-700');
+        setTimeout(() => {
+          panelEl.classList.remove('animate-panel-shake', 'animate-panel-glow', 'ring-4', 'ring-rose-500');
+        }, 2500);
+      }
+      setTimeout(() => {
+        const entryEl = document.getElementById(`serialization-log-entry-${logId}`);
+        if (entryEl) {
+          entryEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          entryEl.classList.add('animate-panel-shake', 'animate-panel-glow', 'ring-4', 'ring-rose-500', 'bg-rose-100/90', 'transition-all', 'duration-700');
+          setTimeout(() => {
+            entryEl.classList.remove('animate-panel-shake', 'animate-panel-glow', 'ring-4', 'ring-rose-500', 'bg-rose-100/90');
+          }, 2500);
+        }
+      }, 200);
+    }, 150);
+    setN1AnomalyToast(null);
   };
 
   useEffect(() => {
@@ -2045,23 +2155,6 @@ export default function App() {
     }
   };
 
-  const [notificationsMuted, setNotificationsMuted] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem('notificationsMuted') === 'true';
-    } catch {
-      return false;
-    }
-  });
-
-  const handleMuteAllNotifications = () => {
-    try {
-      localStorage.setItem('notificationsMuted', 'true');
-    } catch (e) {
-      console.error('Failed to save notificationsMuted state to localStorage:', e);
-    }
-    setNotificationsMuted(true);
-    setProactiveToast(null);
-  };
 
   const [proactiveToast, setProactiveToast] = useState<{
     title: string;
@@ -5144,6 +5237,82 @@ export default function App() {
               >
                 <BellOff className="w-3.5 h-3.5 text-zinc-400" />
                 <span>Mute All</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* N+1 Anomaly Detected Toast Notification */}
+      {n1AnomalyToast && !notificationsMuted && (
+        <div
+          id="toast-n1-anomaly"
+          data-testid="toast-n1-anomaly"
+          role="alert"
+          className={`fixed ${anomalyToast ? 'bottom-56' : 'bottom-6'} right-6 z-50 bg-gradient-to-br from-zinc-950 via-rose-950/95 to-zinc-900 border-2 border-rose-500/80 text-white p-4 rounded-2xl shadow-2xl max-w-md animate-fadeIn flex items-start gap-3.5 ring-4 ring-rose-500/20`}
+        >
+          <div className="p-2.5 bg-rose-600 text-white rounded-xl shrink-0 shadow-md animate-pulse">
+            <Flame className="w-5 h-5 text-amber-200" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h4 className="text-xs font-extrabold text-white flex items-center justify-between">
+              <span className="flex items-center gap-1.5 uppercase tracking-wide text-rose-300">
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                N+1 Cascade Anomaly Detected
+              </span>
+              <button
+                type="button"
+                id="btn-dismiss-n1-anomaly-toast"
+                data-testid="btn-dismiss-n1-anomaly-toast"
+                onClick={() => setN1AnomalyToast(null)}
+                className="text-zinc-400 hover:text-white cursor-pointer p-0.5 rounded transition-colors"
+                title="Dismiss"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </h4>
+
+            <div className="mt-1.5 space-y-1.5">
+              <p className="text-xs text-zinc-200 leading-relaxed font-mono line-clamp-2">
+                {n1AnomalyToast.message}
+              </p>
+              <div className="flex items-center gap-2 flex-wrap font-mono text-[10px]">
+                <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold">
+                  Severity: ANOMALY
+                </span>
+                {n1AnomalyToast.subqueries && (
+                  <span className="px-2 py-0.5 rounded-full bg-rose-950/80 text-rose-200 border border-rose-700/60 font-semibold">
+                    {n1AnomalyToast.subqueries} Unbatched Subqueries
+                  </span>
+                )}
+                {n1AnomalyToast.durationMs && (
+                  <span className="text-zinc-400">
+                    ~{n1AnomalyToast.durationMs.toFixed(1)}ms duration
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-3 flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                id="btn-jump-to-n1-log"
+                data-testid="btn-jump-to-n1-log"
+                onClick={() => handleJumpToN1Log(n1AnomalyToast.logId)}
+                className="px-3.5 py-1.5 bg-gradient-to-r from-amber-400 to-rose-400 hover:from-amber-300 hover:to-rose-300 text-zinc-950 font-extrabold text-xs rounded-xl shadow-lg cursor-pointer transition-all flex items-center gap-1.5 hover:scale-[1.02] active:scale-[0.98]"
+                title="Scroll down to the SerializationErrorLogPanel and inspect this specific N+1 anomaly entry"
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span>Jump to Log in Panel →</span>
+              </button>
+              <button
+                type="button"
+                id="btn-dismiss-n1-anomaly"
+                data-testid="btn-dismiss-n1-anomaly"
+                onClick={() => setN1AnomalyToast(null)}
+                className="px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs rounded-xl transition-colors cursor-pointer"
+              >
+                Dismiss
               </button>
             </div>
           </div>

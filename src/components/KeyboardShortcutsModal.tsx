@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Keyboard, X, Zap, Database, Cpu, Layers, Sparkles, RefreshCw, CheckCircle2, AlertTriangle, Play, HelpCircle } from 'lucide-react';
+import { Keyboard, X, Zap, Database, Cpu, Layers, Sparkles, RefreshCw, CheckCircle2, AlertTriangle, Play, HelpCircle, FileSpreadsheet } from 'lucide-react';
 import { OptimizationFlags } from '../types';
 
 interface KeyboardShortcutsModalProps {
@@ -145,6 +145,15 @@ export const KeyboardShortcutsModal: React.FC<KeyboardShortcutsModalProps> = ({
       status: Object.values(flags).every(Boolean),
       icon: Sparkles,
       impact: 'Instant Auto-Fix'
+    },
+    {
+      category: 'system' as const,
+      categoryLabel: 'Global Operations',
+      keys: [`${modKey}+Shift+E`],
+      action: 'Export Selected Logs (CSV)',
+      description: 'Triggers instant CSV bulk download of selected or filtered logs from the SerializationErrorLogPanel.',
+      icon: FileSpreadsheet,
+      impact: 'Instant CSV Export'
     },
     {
       category: 'system' as const,

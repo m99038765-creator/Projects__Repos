@@ -214,6 +214,8 @@ export const SerializationErrorLogPanel: React.FC<SerializationErrorLogPanelProp
   useEffect(() => {
     if (autoExpandLogId) {
       setExpandedLogId(autoExpandLogId);
+      setIsExpanded(true);
+      setActiveMainTab('errors');
     }
   }, [autoExpandLogId]);
 
@@ -785,6 +787,83 @@ ${impactedComponentsText || 'No severe table bottlenecks detected.'}
     setTimeout(() => setLifecycleToast(null), 3500);
   };
 
+  const [selectedLogIds, setSelectedLogIds] = useState<Set<string>>(new Set());
+
+  const handleExportSelectedCsv = () => {
+    const targetLogs =
+      selectedLogIds.size > 0
+        ? safeLogs.filter((l) => selectedLogIds.has(l.id))
+        : filteredLogs;
+
+    if (targetLogs.length === 0) {
+      setLifecycleToast('No logs selected or visible to export.');
+      setTimeout(() => setLifecycleToast(null), 3000);
+      return;
+    }
+
+    const headers = [
+      'ID',
+      'Timestamp',
+      'TimeFormatted',
+      'Severity',
+      'Type',
+      'Format',
+      'RecordCount',
+      'Message',
+      'SubqueriesCount',
+      'DurationMs',
+      'ThroughputRowsPerSec',
+      'Cause',
+      'TriggerSource'
+    ];
+
+    const rows = targetLogs.map((l) => [
+      `"${l.id}"`,
+      `"${new Date(l.timestamp).toISOString()}"`,
+      `"${l.timeFormatted || ''}"`,
+      `"${l.severity}"`,
+      `"${l.type}"`,
+      `"${l.format}"`,
+      l.recordCount || 0,
+      `"${(l.message || '').replace(/"/g, '""')}"`,
+      l.details?.activeQueriesCount || 0,
+      l.details?.durationMs || 0,
+      l.details?.throughputRowsPerSec || 0,
+      `"${(l.details?.cause || '').replace(/"/g, '""')}"`,
+      `"${(l.details?.triggerSource || '').replace(/"/g, '""')}"`
+    ]);
+
+    const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `serialization-logs-selected-${Date.now()}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    setLifecycleToast(`Exported ${targetLogs.length} selected log(s) to CSV.`);
+    setTimeout(() => setLifecycleToast(null), 3500);
+  };
+
+  // Keyboard shortcut: Ctrl+Shift+E / Cmd+Shift+E to trigger Export Selected CSV
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const isModifier = e.ctrlKey || e.metaKey;
+      if (isModifier && e.shiftKey && e.key.toLowerCase() === 'e') {
+        const activeTag = document.activeElement?.tagName?.toLowerCase();
+        if (activeTag === 'input' || activeTag === 'textarea') return;
+        e.preventDefault();
+        e.stopPropagation();
+        handleExportSelectedCsv();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedLogIds, filteredLogs, safeLogs]);
+
   const handleSimulateLifecycle = (action: LifecycleActionType) => {
     let newEv: OptimizationLifecycleEvent;
     const ts = Date.now();
@@ -1147,6 +1226,25 @@ ${impactedComponentsText || 'No severe table bottlenecks detected.'}
                 <span>Copy Summary</span>
               </>
             )}
+          </button>
+
+          {/* Export Selected CSV Button */}
+          <button
+            type="button"
+            id="btn-export-selected-logs"
+            data-testid="btn-export-selected-logs"
+            onClick={handleExportSelectedCsv}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-semibold bg-emerald-600 hover:bg-emerald-700 text-white transition-all cursor-pointer shadow-2xs mr-1 active:scale-95 border border-emerald-500"
+            title="Export selected or filtered logs to CSV (Ctrl+Shift+E / Cmd+Shift+E)"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-200" />
+            <span>Export Selected</span>
+            <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-emerald-950/80 text-emerald-200 font-mono font-bold">
+              {selectedLogIds.size > 0 ? selectedLogIds.size : filteredLogs.length}
+            </span>
+            <kbd className="hidden lg:inline-block ml-0.5 px-1 py-0.2 text-[9px] bg-emerald-800/80 rounded border border-emerald-400/40 text-emerald-100 font-mono">
+              ^⇧E
+            </kbd>
           </button>
 
           {activeMainTab === 'errors' ? (
@@ -1512,6 +1610,49 @@ ${impactedComponentsText || 'No severe table bottlenecks detected.'}
                 </button>
               </div>
 
+              {/* Bulk Selection Bar */}
+              {filteredLogs.length > 0 && (
+                <div className="flex items-center justify-between text-[11px] bg-zinc-50 border border-zinc-200 px-3 py-1.5 rounded-lg">
+                  <label className="flex items-center gap-2 cursor-pointer font-medium text-zinc-700">
+                    <input
+                      type="checkbox"
+                      id="chk-select-all-logs"
+                      data-testid="chk-select-all-logs"
+                      checked={filteredLogs.length > 0 && filteredLogs.every((l) => selectedLogIds.has(l.id))}
+                      onChange={(e) => {
+                        const next = new Set(selectedLogIds);
+                        if (e.target.checked) {
+                          filteredLogs.forEach((l) => next.add(l.id));
+                        } else {
+                          filteredLogs.forEach((l) => next.delete(l.id));
+                        }
+                        setSelectedLogIds(next);
+                      }}
+                      className="rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                    />
+                    <span>Select All Visible ({filteredLogs.length})</span>
+                  </label>
+                  <div className="flex items-center gap-2">
+                    {selectedLogIds.size > 0 && (
+                      <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200">
+                        {selectedLogIds.size} Selected
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      id="btn-export-selected-inline"
+                      data-testid="btn-export-selected-inline"
+                      onClick={handleExportSelectedCsv}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold bg-emerald-600 hover:bg-emerald-700 text-white rounded transition-colors cursor-pointer shadow-2xs"
+                      title="Export selected logs to CSV (Ctrl+Shift+E / Cmd+Shift+E)"
+                    >
+                      <FileSpreadsheet className="w-3 h-3" />
+                      <span>Export Selected CSV</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* Log Entries Stream List */}
               {filteredLogs.length === 0 ? (
                 <div className="py-8 px-4 text-center border-2 border-dashed border-zinc-200 rounded-xl bg-zinc-50/50">
@@ -1554,6 +1695,22 @@ ${impactedComponentsText || 'No severe table bottlenecks detected.'}
                         {/* Log Row Header */}
                         <div className="flex items-start justify-between gap-2">
                           <div className="flex items-start gap-2 flex-1 min-w-0">
+                            <input
+                              type="checkbox"
+                              id={`chk-select-log-${log.id}`}
+                              data-testid={`chk-select-log-${log.id}`}
+                              checked={selectedLogIds.has(log.id)}
+                              onClick={(e) => e.stopPropagation()}
+                              onChange={(e) => {
+                                e.stopPropagation();
+                                const next = new Set(selectedLogIds);
+                                if (e.target.checked) next.add(log.id);
+                                else next.delete(log.id);
+                                setSelectedLogIds(next);
+                              }}
+                              className="mt-1 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                              aria-label={`Select log ${log.id}`}
+                            />
                             <div className="mt-0.5">{getSeverityIcon(log)}</div>
 
                             <div className="flex-1 min-w-0">

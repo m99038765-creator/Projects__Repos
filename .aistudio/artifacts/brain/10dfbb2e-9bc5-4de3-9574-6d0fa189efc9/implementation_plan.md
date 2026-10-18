@@ -29,6 +29,14 @@ This implementation plan details the addition of a clickable N+1 log count badge
 - **Copy Log Summary Action**:
   - Add 'Copy Summary' button (`#btn-copy-log-summary`) in the `SerializationErrorLogPanel` header.
   - Formats a concise, structured text-based summary of current logs (total N+1 counts, percentage of workload, 10-minute density/frequency, most impacted tables/components, and active engine optimization flags) and copies it to the system clipboard with visual confirmation feedback.
+- **N+1 Anomaly Detected Toast Notification**:
+  - Automatically triggers whenever a new 'Anomaly' severity N+1 cascade log is detected in the serialization logs stream.
+  - Renders a high-visibility toast banner (`#toast-n1-anomaly`) with unbatched subquery metrics, latency impact, and audio chime.
+  - Features a dedicated 'Jump to Log in Panel' button (`#btn-jump-to-n1-log`) that smoothly scrolls to the error log panel, auto-expands the matching log entry, and highlights it with an animated shake-and-glow effect.
+- **Export Selected CSV & Global Shortcut (`Ctrl+Shift+E` / `Cmd+Shift+E`)**:
+  - Enabled a global `Ctrl+Shift+E` (or `Cmd+Shift+E` on Mac) keyboard shortcut that triggers bulk CSV export of selected or filtered logs from `SerializationErrorLogPanel`.
+  - Added dedicated 'Export Selected' buttons (`#btn-export-selected-logs` in header, `#btn-export-selected-inline` in the error stream) and row-level selection checkboxes with a 'Select All Visible' toggle.
+  - Displays instant shortcut toast feedback and in-panel toast with export count confirmation.
 
 ## 2. User Experience & Visual Design
 
