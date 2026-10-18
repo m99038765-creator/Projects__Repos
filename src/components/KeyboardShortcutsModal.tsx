@@ -90,7 +90,7 @@ export const KeyboardShortcutsModal: React.FC<KeyboardShortcutsModalProps> = ({
       category: 'database' as const,
       group: 'Optimization Toggles',
       categoryLabel: 'Database & Engine',
-      keys: [`${modKey}+B`],
+      keys: [`${modKey}+B`, `${modKey}+Alt+B`],
       action: 'Toggle Batch Eager Loading',
       description: 'Eliminates N+1 relational query cascades and connection pool timeouts by eager-loading line items in a single batch query.',
       flagKey: 'batchEagerLoading' as keyof OptimizationFlags,
